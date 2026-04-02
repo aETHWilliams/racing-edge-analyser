@@ -218,7 +218,21 @@ def fetch_meetings(target_date: date) -> list:
     if not data:
         return []
     payload = data.get("payLoad", data) if isinstance(data, dict) else data
-    return payload if isinstance(payload, list) else []
+    meetings = payload if isinstance(payload, list) else []
+
+    # API returns races: NULL at meeting level — fetch races separately per meeting
+    for meeting in meetings:
+        mid = str(meeting.get("meetingId", ""))
+        if not mid:
+            continue
+        rdata = pf_get("form/meetingraces", {"meetingId": mid})
+        if rdata:
+            rpayload = rdata.get("payLoad", rdata) if isinstance(rdata, dict) else rdata
+            meeting["races"] = rpayload if isinstance(rpayload, list) else []
+        else:
+            meeting["races"] = []
+
+    return meetings
 
 def fetch_race_runners(race_id: str) -> list:
     data = pf_get("form/form", {"raceId": race_id})
@@ -468,22 +482,11 @@ with t_races:
     if not st.session_state.races:
         st.markdown('<div class="alert alert-blue">Fetch meetings using the sidebar button.</div>', unsafe_allow_html=True)
     else:
-        with st.expander("🔍 Debug — Raw API response (first meeting)", expanded=False):
-            if st.session_state.races:
-                first = st.session_state.races[0]
-                st.json(first)
-
         for meeting in st.session_state.races:
-            name  = meeting.get("meetingName") or meeting.get("venueName","Unknown")
-            state = meeting.get("state","")
-            # Try common key variants for the races list
-            races = (
-                meeting.get("races")
-                or meeting.get("raceList")
-                or meeting.get("Races")
-                or meeting.get("events")
-                or []
-            )
+            track = meeting.get("track") or {}
+            name  = track.get("name") or meeting.get("meetingName") or meeting.get("venueName","Unknown")
+            state = track.get("state") or meeting.get("state","")
+            races = meeting.get("races") or []
 
             # FIX 2: `continue` was outside the for loop due to wrong indentation.
             # It must be inside the `for meeting` loop to skip non-matching states.
