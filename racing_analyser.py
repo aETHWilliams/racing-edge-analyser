@@ -476,8 +476,13 @@ with t_races:
             name  = meeting.get("meetingName") or meeting.get("venueName","Unknown")
             state = meeting.get("state","")
             races = meeting.get("races",[])
-            if state_filter and state not in state_filter:
-                continue
+            # This check ensures that if 'QLD' is selected, it also matches 'Queensland'
+# Or, if no filter is selected, it shows everything.
+if state_filter:
+    normalized_state = state.upper()
+    # Matches 'QLD' to 'QLD' or 'Queensland'
+    if not any(f in normalized_state for f in state_filter):
+        continue
             with st.expander(f"{name}  —  {state}  —  {len(races)} races"):
                 for race in races:
                     r_num  = race.get("raceNumber","?")
