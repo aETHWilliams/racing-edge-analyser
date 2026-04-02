@@ -203,8 +203,8 @@ def pf_get(endpoint: str, params: dict = {}) -> Optional[dict]:
 
 def fetch_meetings(target_date: date) -> list:
     ds = target_date.strftime("%Y-%m-%d")
-    data = pf_get("form/meetings", {"meetingDate": ds})
-    if not data:
+data = pf_get("form/meetingslist", {"meetingDate": ds})
+  if not data:
         return []
     return data.get("payLoad", data) if isinstance(data, dict) else data
 
