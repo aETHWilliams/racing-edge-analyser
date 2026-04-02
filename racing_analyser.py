@@ -211,11 +211,18 @@ def pf_get(endpoint: str, params: dict = {}) -> Optional[dict]:
     return None
 
 def fetch_meetings(target_date: date) -> list:
-    ds   = target_date.strftime("%Y-%m-%d")
+    # Formats the single date selected in the sidebar
+    ds = target_date.strftime("%Y-%m-%d")
+    
+    # Sends only the meetingDate parameter to keep the URL short
     data = pf_get("form/meetingslist", {"meetingDate": ds})
+    
     if not data:
         return []
-    return data.get("payLoad", data) if isinstance(data, dict) else data
+        
+    # Standardizes the output to a list for the rest of the app
+    payload = data.get("payLoad", data) if isinstance(data, dict) else data
+    return payload if isinstance(payload, list) else []
 
 def fetch_race_runners(race_id: str) -> list:
     data = pf_get("form/form", {"raceId": race_id})
