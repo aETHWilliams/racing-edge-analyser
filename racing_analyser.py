@@ -468,10 +468,22 @@ with t_races:
     if not st.session_state.races:
         st.markdown('<div class="alert alert-blue">Fetch meetings using the sidebar button.</div>', unsafe_allow_html=True)
     else:
+        with st.expander("🔍 Debug — Raw API response (first meeting)", expanded=False):
+            if st.session_state.races:
+                first = st.session_state.races[0]
+                st.json(first)
+
         for meeting in st.session_state.races:
             name  = meeting.get("meetingName") or meeting.get("venueName","Unknown")
             state = meeting.get("state","")
-            races = meeting.get("races",[])
+            # Try common key variants for the races list
+            races = (
+                meeting.get("races")
+                or meeting.get("raceList")
+                or meeting.get("Races")
+                or meeting.get("events")
+                or []
+            )
 
             # FIX 2: `continue` was outside the for loop due to wrong indentation.
             # It must be inside the `for meeting` loop to skip non-matching states.
