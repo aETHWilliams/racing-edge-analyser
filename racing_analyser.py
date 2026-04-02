@@ -210,17 +210,13 @@ def pf_get(endpoint: str, params: dict = {}) -> Optional[dict]:
         st.error(f"Connection error: {e}")
     return None
 
+# FIX 1: fetch_meetings had broken indentation — `if not data` and `return []`
+# were misplaced as stray lines outside their logical block.
 def fetch_meetings(target_date: date) -> list:
-    # Formats the single date selected in the sidebar
     ds = target_date.strftime("%Y-%m-%d")
-    
-    # Sends only the meetingDate parameter to keep the URL short
     data = pf_get("form/meetingslist", {"meetingDate": ds})
-    
     if not data:
         return []
-        
-    # Standardizes the output to a list for the rest of the app
     payload = data.get("payLoad", data) if isinstance(data, dict) else data
     return payload if isinstance(payload, list) else []
 
@@ -476,13 +472,14 @@ with t_races:
             name  = meeting.get("meetingName") or meeting.get("venueName","Unknown")
             state = meeting.get("state","")
             races = meeting.get("races",[])
-            # This check ensures that if 'QLD' is selected, it also matches 'Queensland'
-# Or, if no filter is selected, it shows everything.
-if state_filter:
-    normalized_state = state.upper()
-    # Matches 'QLD' to 'QLD' or 'Queensland'
-    if not any(f in normalized_state for f in state_filter):
-        continue
+
+            # FIX 2: `continue` was outside the for loop due to wrong indentation.
+            # It must be inside the `for meeting` loop to skip non-matching states.
+            if state_filter:
+                normalized_state = state.upper()
+                if not any(f in normalized_state for f in state_filter):
+                    continue
+
             with st.expander(f"{name}  —  {state}  —  {len(races)} races"):
                 for race in races:
                     r_num  = race.get("raceNumber","?")
