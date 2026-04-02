@@ -372,6 +372,88 @@ def detect_value_bet(runner: dict, rating: dict, actual_odds: float) -> dict:
         "market_prob_pct": round((1 / actual_odds) * 100, 1) if actual_odds > 0 else 0,
     }
 
+
+# ─────────────────────────────────────────────────────────────
+# MARKET FRAMING & MODEL PROBABILITY (required for analysis)
+# ─────────────────────────────────────────────────────────────
+OVERROUND_TARGET = 1.10
+
+def record_win_rate(rec):
+    if not rec: return None
+    s = safe_float(rec.get("starts", 0))
+    f = safe_float(rec.get("firsts", 0))
+    return f / s if s >= 3 else None
+
+def frame_market(runners):
+    priced = [(r, safe_float(r.get("priceSP", 0))) for r in runners if safe_float(r.get("priceSP", 0)) > 1.0]
+    if not priced:
+        return {}
+    raw_sum = sum(1 / p for _, p in priced)
+    result = {}
+    for r, sp in priced:
+        rid = str(r.get("runnerId") or r.get("id", ""))
+        raw_implied  = 1 / sp
+        true_implied = raw_implied / raw_sum
+        framed       = true_implied * OVERROUND_TARGET
+        result[rid] = {
+            "sp":             sp,
+            "implied_raw":    round(raw_implied * 100, 1),
+            "true_implied":   round(true_implied * 100, 1),
+            "framed_implied": round(framed * 100, 1),
+        }
+    return result
+
+def model_probability(runner, rating):
+    career_win_pct = safe_float(runner.get("winPct", 0)) / 100.0
+    track_wr  = record_win_rate(runner.get("trackRecord"))
+    dist_wr   = record_win_rate(runner.get("distanceRecord"))
+    tjA2E     = runner.get("trainerJockeyA2E_Career") or {}
+    tj_sr     = safe_float(tjA2E.get("strikeRate", 0)) / 100.0
+    tj_valid  = safe_float(tjA2E.get("runners", 0)) >= 5
+    rat_sig   = (rating.get("pct", 50) / 100.0) if rating else 0.5
+
+    score = career_win_pct * 3.0
+    tw    = 3.0
+    if track_wr is not None:
+        score += track_wr * 1.5; tw += 1.5
+    if dist_wr is not None:
+        score += dist_wr * 1.5; tw += 1.5
+    if tj_valid:
+        score += tj_sr * 2.0; tw += 2.0
+    score += rat_sig * 0.08; tw += 0.08
+
+    return min(max(score / tw if tw else career_win_pct, 0.01), 0.98)
+
+def normalise_field_probs(runners, ratings):
+    probs = {}
+    for r in runners:
+        rid = str(r.get("runnerId") or r.get("id", ""))
+        probs[rid] = model_probability(r, ratings.get(rid, {}))
+    total = sum(probs.values())
+    if total > 0:
+        probs = {k: round(v / total, 4) for k, v in probs.items()}
+    return probs
+
+def value_assessment(model_prob, true_implied_pct, sp, tj_a2e, rating_pct, min_rating):
+    market_prob = true_implied_pct / 100.0
+    edge        = model_prob - market_prob
+    has_edge    = edge > 0
+    rating_ok   = rating_pct >= min_rating
+    tj_ok       = tj_a2e >= 1.0
+    odds_ok     = sp >= 1.80
+    bet         = has_edge and rating_ok and tj_ok and odds_ok
+    reasons = []
+    if not has_edge:  reasons.append(f"model {round(model_prob*100,1)}% vs market {round(market_prob*100,1)}% — no edge")
+    if not rating_ok: reasons.append(f"rating {rating_pct}% below min {min_rating}%")
+    if not tj_ok:     reasons.append(f"T+J A2E {round(tj_a2e,2)} below 1.0")
+    if not odds_ok:   reasons.append("odds below minimum")
+    return {
+        "bet": bet, "edge_pct": round(edge*100,1), "has_edge": has_edge,
+        "rating_ok": rating_ok, "tj_ok": tj_ok,
+        "model_prob_pct": round(model_prob*100,1),
+        "market_prob_pct": round(market_prob*100,1),
+        "reasons": reasons,
+    }
 # ─────────────────────────────────────────────────────────────
 # SPEEDMAP
 # ─────────────────────────────────────────────────────────────
