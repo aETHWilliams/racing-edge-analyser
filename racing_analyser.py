@@ -345,6 +345,89 @@ def rate_runner(runner, past=[]):
     br["pct"]       = round(br["composite"]/MAX_SCORE*100,1)
     return br
 
+# ─────────────────────────────────────────────────────────────
+# MARKET FRAMING & MODEL PROBABILITY
+# ─────────────────────────────────────────────────────────────
+OVERROUND_TARGET = 1.10
+
+def record_win_rate(rec):
+    if not rec: return None
+    s = safe_float(rec.get("starts", 0))
+    f = safe_float(rec.get("firsts", 0))
+    return f / s if s >= 3 else None
+
+def frame_market(runners):
+    priced = [(r, safe_float(r.get("priceSP", 0))) for r in runners if safe_float(r.get("priceSP", 0)) > 1.0]
+    if not priced:
+        return {}
+    raw_sum = sum(1 / p for _, p in priced)
+    result = {}
+    for r, sp in priced:
+        rid = str(r.get("runnerId") or r.get("id", ""))
+        raw_implied  = 1 / sp
+        true_implied = raw_implied / raw_sum
+        framed       = true_implied * OVERROUND_TARGET
+        result[rid] = {
+            "sp":             sp,
+            "implied_raw":    round(raw_implied * 100, 1),
+            "true_implied":   round(true_implied * 100, 1),
+            "framed_implied": round(framed * 100, 1),
+        }
+    return result
+
+def model_probability(runner, rating):
+    career_win_pct = safe_float(runner.get("winPct", 0)) / 100.0
+    track_wr  = record_win_rate(runner.get("trackRecord"))
+    dist_wr   = record_win_rate(runner.get("distanceRecord"))
+    tjA2E     = runner.get("trainerJockeyA2E_Career") or {}
+    tj_sr     = safe_float(tjA2E.get("strikeRate", 0)) / 100.0
+    tj_valid  = safe_float(tjA2E.get("runners", 0)) >= 5
+    rat_sig   = (rating.get("pct", 50) / 100.0) if rating else 0.5
+
+    score = career_win_pct * 3.0
+    tw    = 3.0
+    if track_wr is not None:
+        score += track_wr * 1.5; tw += 1.5
+    if dist_wr is not None:
+        score += dist_wr * 1.5; tw += 1.5
+    if tj_valid:
+        score += tj_sr * 2.0; tw += 2.0
+    score += rat_sig * 0.08; tw += 0.08
+
+    return min(max(score / tw if tw else career_win_pct, 0.01), 0.98)
+
+def normalise_field_probs(runners, ratings):
+    probs = {}
+    for r in runners:
+        rid = str(r.get("runnerId") or r.get("id", ""))
+        probs[rid] = model_probability(r, ratings.get(rid, {}))
+    total = sum(probs.values())
+    if total > 0:
+        probs = {k: round(v / total, 4) for k, v in probs.items()}
+    return probs
+
+def value_assessment(model_prob, true_implied_pct, sp, tj_a2e, rating_pct, min_rating):
+    market_prob = true_implied_pct / 100.0
+    edge        = model_prob - market_prob
+    has_edge    = edge > 0
+    rating_ok   = rating_pct >= min_rating
+    tj_ok       = tj_a2e >= 1.0
+    odds_ok     = sp >= 1.80
+    bet         = has_edge and rating_ok and tj_ok and odds_ok
+    reasons = []
+    if not has_edge:  reasons.append(f"model {round(model_prob*100,1)}% vs market {round(market_prob*100,1)}% — no edge")
+    if not rating_ok: reasons.append(f"rating {rating_pct}% below min {min_rating}%")
+    if not tj_ok:     reasons.append(f"T+J A2E {round(tj_a2e,2)} below 1.0")
+    if not odds_ok:   reasons.append("odds below minimum")
+    return {
+        "bet": bet, "edge_pct": round(edge*100,1), "has_edge": has_edge,
+        "rating_ok": rating_ok, "tj_ok": tj_ok,
+        "model_prob_pct": round(model_prob*100,1),
+        "market_prob_pct": round(market_prob*100,1),
+        "reasons": reasons,
+    }
+
+
 
 # ─────────────────────────────────────────────────────────────
 # SPEEDMAP
@@ -378,17 +461,15 @@ def kelly_stake(bank, prob, odds, fraction):
     k = (b*prob-(1-prob))/b
     return bank*fraction*max(k,0)
 
-def recommended_stake(bank, pct, odds, method, kelly_frac, flat_pct, fixed, max_pct):
-    prob = pct/100; mkt = 1/odds if odds>1 else 0; edge = prob-mkt
-    if method=="Kelly":      stake = kelly_stake(bank,prob,odds,kelly_frac)
-    elif method=="Flat %":   stake = bank*flat_pct/100 if edge>0 else 0
-    else:                    stake = fixed if edge>0 else 0
-    stake = min(round(stake,2), bank*max_pct/100)
-    return {
-        "stake": stake, "model_prob": round(prob*100,1),
-        "market_prob": round(mkt*100,1), "edge_pct": round(edge*100,1),
-        "value": edge>0, "ev": round((prob*(odds-1)-(1-prob))*stake,2),
-    }
+def recommended_stake(bank, model_prob, odds, method, kelly_frac, flat_pct, fixed, max_pct):
+    # model_prob is already a true probability (0-1), odds is SP decimal
+    edge = model_prob - (1/odds if odds > 1 else 0)
+    if method == "Kelly":   stake = kelly_stake(bank, model_prob, odds, kelly_frac)
+    elif method == "Flat %": stake = bank * flat_pct / 100 if edge > 0 else 0
+    else:                    stake = fixed if edge > 0 else 0
+    stake = min(round(stake, 2), bank * max_pct / 100)
+    ev    = round((model_prob * (odds - 1) - (1 - model_prob)) * stake, 2)
+    return {"stake": stake, "ev": ev}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -591,35 +672,81 @@ with t_analysis:
 
         st.markdown('<hr>', unsafe_allow_html=True)
 
-        # Ratings
-        st.markdown("## Runner Ratings")
+        # Rate runners + build market frame
+        st.markdown("## Runner Analysis")
         if st.button("Rate All Runners"):
             ratings = {}; prog = st.progress(0)
             for i, runner in enumerate(runners):
-                hid  = str(runner.get("runnerId") or runner.get("horseId") or runner.get("id",""))
-                past = fetch_runner_form(hid) if hid else []
-                ratings[hid] = rate_runner(runner, past)
+                hid = str(runner.get("runnerId") or runner.get("horseId") or runner.get("id",""))
+                ratings[hid] = rate_runner(runner, [])
                 prog.progress((i+1)/len(runners))
             st.session_state.ratings = ratings; prog.empty()
             st.success("All runners rated")
 
-        ratings = st.session_state.ratings
-        sorted_runners = sorted(runners, key=lambda r: ratings.get(str(r.get("horseId") or r.get("id","")),{}).get("composite",0), reverse=True)
+        ratings     = st.session_state.ratings
+        mkt_frame   = frame_market(runners)
+        field_probs = normalise_field_probs(runners, ratings) if ratings else {}
+
+        def sort_key(r):
+            rid = str(r.get("runnerId") or r.get("id",""))
+            return field_probs.get(rid, 0) if field_probs else -safe_float(r.get("priceSP",99))
+        sorted_runners = sorted(runners, key=sort_key, reverse=True)
+
+        # Market overview table
+        if mkt_frame:
+            st.markdown("## Market Frame (110%)")
+            import pandas as _pd
+            mkt_rows = []
+            for r in sorted(runners, key=lambda x: safe_float(x.get("priceSP",99))):
+                rid  = str(r.get("runnerId") or r.get("id",""))
+                mf   = mkt_frame.get(rid)
+                if not mf: continue
+                mp   = field_probs.get(rid, 0)
+                diff = round(mp*100 - mf["true_implied"], 1)
+                mkt_rows.append({
+                    "Horse":       r.get("name","?"),
+                    "SP":          f"${mf['sp']}",
+                    "Market %":    f"{mf['true_implied']}%",
+                    "Model %":     f"{round(mp*100,1)}%" if mp else "-",
+                    "Edge":        (f"+{diff}%" if diff > 0 else f"{diff}%") if mp else "-",
+                })
+            if mkt_rows:
+                st.dataframe(_pd.DataFrame(mkt_rows), use_container_width=True, hide_index=True)
+            st.markdown('<hr>', unsafe_allow_html=True)
 
         for rank, runner in enumerate(sorted_runners, 1):
             hid      = str(runner.get("runnerId") or runner.get("horseId") or runner.get("id",""))
             name     = runner.get("name") or runner.get("runnerName") or runner.get("horseName","Unknown")
-            barrier  = runner.get("barrierNumber") or runner.get("barrier","?")
+            barrier  = runner.get("barrier") or runner.get("barrierNumber","?")
             jockey   = (runner.get("jockey") or {}).get("fullName","—") or runner.get("jockeyName","—")
             trainer  = (runner.get("trainer") or {}).get("fullName","—") or runner.get("trainerName","—")
             weight   = runner.get("weightTotal") or runner.get("weightCarried") or runner.get("handicapWeight","—")
             price    = safe_float(runner.get("priceSP") or runner.get("fixedOddsWin") or runner.get("price",0))
             pace_lbl = PACE_LABELS.get(int(runner.get("pacePosition",3)),"—")
             rating   = ratings.get(hid)
-            label    = f"#{rank}  {name}   Barrier {barrier}   {'$'+str(price) if price else 'N/A'}"
-            if rating: label += f"   Rating {rating['pct']}%"
+            mf       = mkt_frame.get(hid, {})
+            mp       = field_probs.get(hid, 0)
+            tjA2E    = runner.get("trainerJockeyA2E_Career") or {}
+            tj_a2e   = safe_float(tjA2E.get("a2E", 0))
 
-            with st.expander(label, expanded=(rank<=3)):
+            verdict = None
+            if rating and mf and mp:
+                verdict = value_assessment(
+                    model_prob=mp,
+                    true_implied_pct=mf["true_implied"],
+                    sp=price,
+                    tj_a2e=tj_a2e,
+                    rating_pct=rating["pct"],
+                    min_rating=st.session_state.min_rating,
+                )
+
+            bet_flag = "  ✦ BET" if (verdict and verdict["bet"]) else ""
+            label = f"#{rank}  {name}   B{barrier}   {'$'+str(price) if price else 'N/A'}"
+            if mp: label += f"   Model {round(mp*100,1)}%"
+            if mf: label += f"   Mkt {mf.get('true_implied','?')}%"
+            label += bet_flag
+
+            with st.expander(label, expanded=(rank<=3 or bool(verdict and verdict["bet"]))):
                 left, right = st.columns([3,2])
                 with left:
                     st.markdown(
@@ -634,22 +761,40 @@ with t_analysis:
                         f'&nbsp;&nbsp; Trainer &nbsp;<span style="color:#d4dae6">{trainer}</span></div>',
                         unsafe_allow_html=True
                     )
+                    career_win = safe_float(runner.get("winPct",0))
+                    career_plc = safe_float(runner.get("placePct",0))
+                    track_rec  = runner.get("trackRecord") or {}
+                    dist_rec   = runner.get("distanceRecord") or {}
+                    t_s = safe_float(track_rec.get("starts",0)); t_w = safe_float(track_rec.get("firsts",0))
+                    d_s = safe_float(dist_rec.get("starts",0));  d_w = safe_float(dist_rec.get("firsts",0))
+                    st.markdown(
+                        f'<div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:6px">'
+                        f'<div class="card-sm"><div class="stat-label">Career Win%</div>'
+                        f'<div style="font-family:\'DM Mono\',monospace;font-size:1rem;color:#d4dae6">{career_win:.1f}%</div></div>'
+                        f'<div class="card-sm"><div class="stat-label">Career Place%</div>'
+                        f'<div style="font-family:\'DM Mono\',monospace;font-size:1rem;color:#d4dae6">{career_plc:.1f}%</div></div>'
+                        f'<div class="card-sm"><div class="stat-label">Track Record</div>'
+                        f'<div style="font-family:\'DM Mono\',monospace;font-size:1rem;color:#d4dae6">{int(t_w)}/{int(t_s)}</div></div>'
+                        f'<div class="card-sm"><div class="stat-label">Dist Record</div>'
+                        f'<div style="font-family:\'DM Mono\',monospace;font-size:1rem;color:#d4dae6">{int(d_w)}/{int(d_s)}</div></div>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
                     if rating:
                         st.markdown(
                             f'<div style="margin-top:14px">'
-                            f'<div style="font-family:\'DM Mono\',monospace;font-size:0.62rem;color:#4a5568;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:4px">Composite Rating</div>'
+                            f'<div style="font-family:\'DM Mono\',monospace;font-size:0.62rem;color:#4a5568;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:4px">Form Rating</div>'
                             f'<div style="font-family:\'DM Mono\',monospace;font-size:1.4rem;color:#c8f135">{rating["composite"]}'
                             f'<span style="font-size:0.75rem;color:#6b7a99"> / {MAX_SCORE} &nbsp; ({rating["pct"]}%)</span></div>'
                             f'<div class="bar-wrap"><div class="bar-fill" style="width:{int(rating["pct"])}%"></div></div>'
                             f'</div>',
                             unsafe_allow_html=True
                         )
-                        st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
+                        st.markdown('<div style="height:10px"></div>', unsafe_allow_html=True)
                         for key, max_val in WEIGHTS.items():
                             val = rating.get(key,0); pct = int(val/max_val*100)
                             st.markdown(
-                                f'<div class="comp-row">'
-                                f'<span class="comp-name">{LABELS[key]}</span>'
+                                f'<div class="comp-row"><span class="comp-name">{LABELS[key]}</span>'
                                 f'<div style="flex:1;margin:0 12px;background:var(--border2);border-radius:2px;height:2px">'
                                 f'<div style="width:{pct}%;height:2px;background:var(--accent);border-radius:2px"></div></div>'
                                 f'<span class="comp-score">{val} / {max_val}</span></div>',
@@ -657,45 +802,62 @@ with t_analysis:
                             )
 
                 with right:
-                    if rating and price > 1:
-                        rec = recommended_stake(
-                            bank=st.session_state.bank, pct=rating["pct"], odds=price,
-                            method=st.session_state.staking_method, kelly_frac=st.session_state.kelly_fraction,
-                            flat_pct=st.session_state.flat_stake_pct, fixed=st.session_state.level_stake,
-                            max_pct=st.session_state.max_stake_pct,
-                        )
-                        ec = "green" if rec["value"] else "red"
-                        es = f"+{rec['edge_pct']}%" if rec["edge_pct"]>=0 else f"{rec['edge_pct']}%"
+                    if verdict and price > 1:
+                        g1 = "pill-green" if verdict["has_edge"]  else "pill-red"
+                        g2 = "pill-green" if verdict["rating_ok"] else "pill-red"
+                        g3 = "pill-green" if verdict["tj_ok"]     else "pill-red"
+                        edge_s = f"+{verdict['edge_pct']}%" if verdict["edge_pct"] >= 0 else f"{verdict['edge_pct']}%"
+                        tj_sr  = safe_float(tjA2E.get("strikeRate",0))
                         st.markdown(
-                            f'<div class="card-sm">'
-                            f'<div class="stat-label">Recommended Stake</div>'
-                            f'<div style="font-family:\'DM Mono\',monospace;font-size:1.5rem;color:var(--accent);margin-bottom:10px">${rec["stake"]:.2f}</div>'
-                            f'<div style="font-size:0.72rem;color:#6b7a99;font-family:\'DM Mono\',monospace;line-height:1.9">'
-                            f'Edge &nbsp;<span style="color:var(--{ec})">{es}</span><br>'
-                            f'Model prob &nbsp;<span style="color:#d4dae6">{rec["model_prob"]}%</span><br>'
-                            f'Market prob &nbsp;<span style="color:#d4dae6">{rec["market_prob"]}%</span><br>'
-                            f'Expected value &nbsp;<span style="color:var(--{ec})">${rec["ev"]:.2f}</span>'
+                            f'<div class="card-sm" style="margin-bottom:10px">'
+                            f'<div class="stat-label" style="margin-bottom:8px">Probability</div>'
+                            f'<div style="font-size:0.72rem;font-family:\'DM Mono\',monospace;line-height:2.0">'
+                            f'SP &nbsp;<span style="color:#d4dae6">${price}</span>'
+                            f'&nbsp;&nbsp; Market &nbsp;<span style="color:#d4dae6">{mf.get("true_implied","?")}%</span><br>'
+                            f'Model &nbsp;<span style="color:#c8f135;font-size:0.95rem">{verdict["model_prob_pct"]}%</span>'
+                            f'&nbsp;&nbsp; Edge &nbsp;<span style="color:{"var(--green)" if verdict["has_edge"] else "var(--red)"}">{"+" if verdict["edge_pct"]>=0 else ""}{verdict["edge_pct"]}%</span>'
                             f'</div></div>',
                             unsafe_allow_html=True
                         )
-                        passes = (
-                            rec["value"]
-                            and st.session_state.min_odds <= price <= st.session_state.max_odds
-                            and rating["pct"] >= st.session_state.min_rating
-                            and rec["stake"] > 0
+                        st.markdown(
+                            f'<div class="card-sm" style="margin-bottom:10px">'
+                            f'<div class="stat-label" style="margin-bottom:8px">Bet Gates</div>'
+                            f'<div style="font-size:0.72rem;font-family:\'DM Mono\',monospace;line-height:2.1">'
+                            f'<span class="pill {g1}">{"PASS" if verdict["has_edge"] else "FAIL"}</span> Positive edge<br>'
+                            f'<span class="pill {g2}">{"PASS" if verdict["rating_ok"] else "FAIL"}</span> Rating {rating["pct"] if rating else "?"}% (min {st.session_state.min_rating}%)<br>'
+                            f'<span class="pill {g3}">{"PASS" if verdict["tj_ok"] else "FAIL"}</span> T+J A2E {round(tj_a2e,2)} &nbsp; SR {tj_sr:.1f}%'
+                            f'</div></div>',
+                            unsafe_allow_html=True
                         )
-                        if passes:
-                            st.markdown('<div class="alert alert-green">Qualifies — positive edge and passes all filters</div>', unsafe_allow_html=True)
+                        if verdict["bet"]:
+                            rec = recommended_stake(
+                                bank=st.session_state.bank, model_prob=mp, odds=price,
+                                method=st.session_state.staking_method, kelly_frac=st.session_state.kelly_fraction,
+                                flat_pct=st.session_state.flat_stake_pct, fixed=st.session_state.level_stake,
+                                max_pct=st.session_state.max_stake_pct,
+                            )
+                            st.markdown(
+                                f'<div class="card-sm" style="border-color:var(--green);margin-bottom:10px">'
+                                f'<div class="stat-label">Stake</div>'
+                                f'<div style="font-family:\'DM Mono\',monospace;font-size:1.5rem;color:var(--accent)">${rec["stake"]:.2f}</div>'
+                                f'<div style="font-size:0.7rem;color:#6b7a99;font-family:\'DM Mono\',monospace;margin-top:4px">'
+                                f'EV &nbsp;<span style="color:var(--green)">${rec["ev"]:.2f}</span></div>'
+                                f'</div>',
+                                unsafe_allow_html=True
+                            )
+                            st.markdown('<div class="alert alert-green">BET — all three gates pass</div>', unsafe_allow_html=True)
                             if st.button(f"Log Bet — {name}", key=f"log_{hid}"):
-                                log_bet(name, f"{r_trk} {r_name}", rec["stake"], price, rec["edge_pct"])
+                                log_bet(name, f"{r_trk} {r_name}", rec["stake"], price, verdict["edge_pct"])
                                 st.success("Bet logged")
                         else:
-                            reasons = []
-                            if not rec["value"]:                                reasons.append("no value edge")
-                            if price < st.session_state.min_odds:               reasons.append("odds too short")
-                            if price > st.session_state.max_odds:               reasons.append("odds too long")
-                            if rating["pct"] < st.session_state.min_rating:     reasons.append("rating below threshold")
-                            st.markdown(f'<div class="alert alert-red">No bet — {", ".join(reasons)}</div>', unsafe_allow_html=True)
+                            st.markdown(
+                                f'<div class="alert alert-red">No bet — {" · ".join(verdict["reasons"])}</div>',
+                                unsafe_allow_html=True
+                            )
+                    elif price <= 1:
+                        st.markdown('<div class="alert alert-amber">No SP price available</div>', unsafe_allow_html=True)
+                    else:
+                        st.markdown('<div class="alert alert-blue">Click Rate All Runners to analyse</div>', unsafe_allow_html=True)
 
                 nk   = f"{hid}_{race.get('raceId','')}"
                 note = st.text_area("Notes", value=st.session_state.notes.get(nk,""), key=f"note_{hid}", height=55, placeholder="Add notes...")
@@ -711,7 +873,7 @@ with t_staking:
     st.markdown("## Methods")
     c1,c2,c3 = st.columns(3)
     for col, title, body in [
-        (c1,"Kelly Criterion","Mathematically optimal. Stakes proportional to your edge.<br><br><span style=\"font-family:'DM Mono',monospace;font-size:0.72rem;color:#d4dae6\">f = (bp - q) / b</span><br><br>Quarter Kelly (0.25) is strongly recommended — reduces variance without sacrificing long-run growth."),
+        (c1,"Kelly Criterion","Mathematically optimal. Stakes proportional to your edge.<br><br><span style=\"font-family:\'DM Mono\',monospace;font-size:0.72rem;color:#d4dae6\">f = (bp - q) / b</span><br><br>Quarter Kelly (0.25) is strongly recommended — reduces variance without sacrificing long-run growth."),
         (c2,"Flat Percentage","Fixed % of current bank on every qualifying bet. Automatically scales down during losing runs.<br><br>Simple and effective but does not account for edge size."),
         (c3,"Level Stakes","Fixed dollar amount per bet regardless of bank or edge.<br><br>Easiest for tracking ROI. Does not protect bank during drawdowns."),
     ]:
@@ -847,10 +1009,10 @@ with t_guide:
     st.markdown("""
 <div class="card" style="font-size:0.82rem;color:#6b7a99;line-height:1.8">
 A value bet exists when your model's estimated probability exceeds the market's implied probability.<br><br>
-<span style="font-family:'DM Mono',monospace;font-size:0.8rem;color:#d4dae6">Value = Model Prob &gt; (1 / Decimal Odds)</span><br><br>
+<span style="font-family:\'DM Mono\',monospace;font-size:0.8rem;color:#d4dae6">Value = Model Prob &gt; (1 / Decimal Odds)</span><br><br>
 If the model says 30% and the market prices the horse at $4.00 (25% implied), you hold a +5% edge.
 Over hundreds of bets, positive edges compound into profit regardless of individual results.<br><br>
-<span style="font-family:'DM Mono',monospace;font-size:0.8rem;color:#d4dae6">EV = (Win% x Net Win) — (Loss% x Stake)</span><br>
+<span style="font-family:\'DM Mono\',monospace;font-size:0.8rem;color:#d4dae6">EV = (Win% x Net Win) — (Loss% x Stake)</span><br>
 Only bet when EV is positive.
 </div>
 """, unsafe_allow_html=True)
