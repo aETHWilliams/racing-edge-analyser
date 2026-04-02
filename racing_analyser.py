@@ -225,10 +225,18 @@ def fetch_meetings(target_date: date) -> list:
         mid = str(meeting.get("meetingId", ""))
         if not mid:
             continue
-        rdata = pf_get("form/meetingraces", {"meetingId": mid})
+        # form/meeting returns the full meeting object including races list
+        rdata = pf_get("form/meeting", {"meetingId": mid})
         if rdata:
             rpayload = rdata.get("payLoad", rdata) if isinstance(rdata, dict) else rdata
-            meeting["races"] = rpayload if isinstance(rpayload, list) else []
+            # Response may be the meeting dict itself with a races key, or a list of races
+            if isinstance(rpayload, dict):
+                meeting["races"] = rpayload.get("races") or []
+                meeting["_raw_meeting"] = rpayload
+            elif isinstance(rpayload, list):
+                meeting["races"] = rpayload
+            else:
+                meeting["races"] = []
         else:
             meeting["races"] = []
 
@@ -482,6 +490,14 @@ with t_races:
     if not st.session_state.races:
         st.markdown('<div class="alert alert-blue">Fetch meetings using the sidebar button.</div>', unsafe_allow_html=True)
     else:
+        with st.expander("🔍 Debug — first meeting structure", expanded=True):
+            if st.session_state.races:
+                m = st.session_state.races[0]
+                st.write("races list length:", len(m.get("races") or []))
+                st.write("races sample (first item):", (m.get("races") or [None])[0])
+                st.write("_raw_meeting keys:", list((m.get("_raw_meeting") or {}).keys()))
+                st.json({k: v for k, v in m.items() if k not in ("races", "_raw_meeting")})
+
         for meeting in st.session_state.races:
             track = meeting.get("track") or {}
             name  = track.get("name") or meeting.get("meetingName") or meeting.get("venueName","Unknown")
