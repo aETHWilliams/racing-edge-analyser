@@ -243,10 +243,13 @@ def fetch_meetings(target_date: date) -> list:
     return meetings
 
 def fetch_race_runners(race_id: str) -> list:
-    data = pf_get("form/form", {"raceId": race_id})
+    # Runners are already embedded in the race object from form/meeting.
+    # Fall back to form/fields endpoint if a direct fetch is needed.
+    data = pf_get("form/fields", {"raceId": race_id})
     if not data:
         return []
-    return data.get("payLoad", data) if isinstance(data, dict) else data
+    payload = data.get("payLoad", data) if isinstance(data, dict) else data
+    return payload if isinstance(payload, list) else []
 
 def fetch_runner_form(horse_id: str) -> list:
     data = pf_get("form/form", {"horseId": horse_id})
@@ -303,25 +306,25 @@ def calc_barrier_rating(runner):
     return round(max(10-(b-12)*0.5,2),1)
 
 def calc_weight_rating(runner):
-    w = safe_float(runner.get("weightCarried") or runner.get("handicapWeight",57))
+    w = safe_float(runner.get("weightTotal") or runner.get("weightCarried") or runner.get("handicapWeight",57))
     return round(min(max(10-(w-54)*0.5,2),10),1) if w else 8.0
 
 def calc_jockey_rating(runner):
-    sr = safe_float(runner.get("jockeyStrikeRate") or runner.get("jockeySR",0))
+    sr = safe_float((runner.get("jockeyA2E_Career") or {}).get("strikeRate") or runner.get("jockeyStrikeRate") or runner.get("jockeySR",0))
     return round(min(sr/25*10,10),1) if sr>0 else 7.0
 
 def calc_trainer_rating(runner):
-    sr = safe_float(runner.get("trainerStrikeRate") or runner.get("trainerSR",0))
+    sr = safe_float((runner.get("trainerA2E_Career") or {}).get("strikeRate") or runner.get("trainerStrikeRate") or runner.get("trainerSR",0))
     return round(min(sr/25*5,5),1) if sr>0 else 3.5
 
 def calc_track_rating(runner, past):
-    track = (runner.get("meetingName") or "").lower()
+    track = (runner.get("meetingName") or (runner.get("track") or {}).get("name") or "").lower()
     runs  = [s for s in past if (s.get("meetingName") or "").lower()==track]
     wins  = [s for s in runs if safe_float(s.get("finishingPosition",99))==1]
     return round(len(wins)/len(runs)*5,1) if runs else 3.0
 
 def calc_distance_rating(runner, past):
-    dist = safe_float(runner.get("raceDistance") or runner.get("distance",1200))
+    dist = safe_float(runner.get("distance") or runner.get("raceDistance",1200))
     runs = [s for s in past if abs(safe_float(s.get("raceDistance") or s.get("distance",0))-dist)<=100]
     wins = [s for s in runs if safe_float(s.get("finishingPosition",99))==1]
     return round(len(wins)/len(runs)*5,1) if runs else 2.0
@@ -351,7 +354,7 @@ PACE_LABELS = {1:"Leader",2:"On Pace",3:"Midfield",4:"Back",5:"Last"}
 def assign_pace(runners):
     for r in runners:
         if not r.get("pacePosition"):
-            b = safe_float(r.get("barrierNumber") or r.get("barrier",8))
+            b = safe_float(r.get("barrier") or r.get("barrierNumber",8))
             r["pacePosition"] = 1 if b<=3 else 2 if b<=6 else 3 if b<=10 else 4
     return runners
 
@@ -490,14 +493,6 @@ with t_races:
     if not st.session_state.races:
         st.markdown('<div class="alert alert-blue">Fetch meetings using the sidebar button.</div>', unsafe_allow_html=True)
     else:
-        with st.expander("🔍 Debug — first meeting structure", expanded=True):
-            if st.session_state.races:
-                m = st.session_state.races[0]
-                st.write("races list length:", len(m.get("races") or []))
-                st.write("races sample (first item):", (m.get("races") or [None])[0])
-                st.write("_raw_meeting keys:", list((m.get("_raw_meeting") or {}).keys()))
-                st.json({k: v for k, v in m.items() if k not in ("races", "_raw_meeting")})
-
         for meeting in st.session_state.races:
             track = meeting.get("track") or {}
             name  = track.get("name") or meeting.get("meetingName") or meeting.get("venueName","Unknown")
@@ -513,10 +508,12 @@ with t_races:
 
             with st.expander(f"{name}  —  {state}  —  {len(races)} races"):
                 for race in races:
-                    r_num  = race.get("raceNumber","?")
-                    r_name = race.get("raceName",f"Race {r_num}")
-                    r_dist = race.get("raceDistance","?")
-                    r_time = race.get("raceTime","")
+                    race["_meetingName"] = name
+                    race["_meetingState"] = state
+                    r_num  = race.get("number") or race.get("raceNumber","?")
+                    r_name = race.get("name") or race.get("raceName",f"Race {r_num}")
+                    r_dist = race.get("distance") or race.get("raceDistance","?")
+                    r_time = race.get("startTime") or race.get("raceTime","")
                     r_cls  = race.get("raceClass","")
                     r_id   = str(race.get("raceId") or race.get("id",""))
 
@@ -535,9 +532,12 @@ with t_races:
                             st.session_state.runners = []
                             st.session_state.ratings = {}
                             with st.spinner("Loading runners..."):
-                                runners = fetch_race_runners(r_id)
+                                # Runners are already embedded in the race object
+                                runners = st.session_state.selected_race.get("runners", [])
+                                if not runners:
+                                    runners = fetch_race_runners(r_id)
                                 st.session_state.runners = assign_pace(runners)
-                            st.success(f"{len(runners)} runners loaded — go to Analysis tab")
+                            st.success(f"{len(st.session_state.runners)} runners loaded — go to Analysis tab")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -554,7 +554,7 @@ with t_analysis:
     else:
         r_name = race.get("raceName","Race")
         r_dist = race.get("raceDistance","?")
-        r_trk  = race.get("meetingName","")
+        r_trk  = race.get("_meetingName") or race.get("meetingName","")
         r_cond = race.get("trackCondition","")
         r_cls  = race.get("raceClass","")
 
@@ -596,7 +596,7 @@ with t_analysis:
         if st.button("Rate All Runners"):
             ratings = {}; prog = st.progress(0)
             for i, runner in enumerate(runners):
-                hid  = str(runner.get("horseId") or runner.get("id",""))
+                hid  = str(runner.get("runnerId") or runner.get("horseId") or runner.get("id",""))
                 past = fetch_runner_form(hid) if hid else []
                 ratings[hid] = rate_runner(runner, past)
                 prog.progress((i+1)/len(runners))
@@ -607,13 +607,13 @@ with t_analysis:
         sorted_runners = sorted(runners, key=lambda r: ratings.get(str(r.get("horseId") or r.get("id","")),{}).get("composite",0), reverse=True)
 
         for rank, runner in enumerate(sorted_runners, 1):
-            hid      = str(runner.get("horseId") or runner.get("id",""))
-            name     = runner.get("runnerName") or runner.get("horseName","Unknown")
+            hid      = str(runner.get("runnerId") or runner.get("horseId") or runner.get("id",""))
+            name     = runner.get("name") or runner.get("runnerName") or runner.get("horseName","Unknown")
             barrier  = runner.get("barrierNumber") or runner.get("barrier","?")
-            jockey   = runner.get("jockeyName","—")
-            trainer  = runner.get("trainerName","—")
-            weight   = runner.get("weightCarried") or runner.get("handicapWeight","—")
-            price    = safe_float(runner.get("fixedOddsWin") or runner.get("price",0))
+            jockey   = (runner.get("jockey") or {}).get("fullName","—") or runner.get("jockeyName","—")
+            trainer  = (runner.get("trainer") or {}).get("fullName","—") or runner.get("trainerName","—")
+            weight   = runner.get("weightTotal") or runner.get("weightCarried") or runner.get("handicapWeight","—")
+            price    = safe_float(runner.get("priceSP") or runner.get("fixedOddsWin") or runner.get("price",0))
             pace_lbl = PACE_LABELS.get(int(runner.get("pacePosition",3)),"—")
             rating   = ratings.get(hid)
             label    = f"#{rank}  {name}   Barrier {barrier}   {'$'+str(price) if price else 'N/A'}"
