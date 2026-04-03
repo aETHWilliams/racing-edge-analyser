@@ -3,12 +3,6 @@ Racing Edge Analyser  —  Powered by PuntingForm API v2
 
 Install:  pip install streamlit requests pandas numpy
 Run:      streamlit run racing_analyser.py
-
-KEY API FIXES (root cause of all 400 errors):
-  - meetingslist returns meetings. Races may be nested or fetched per-race.
-  - form/form takes raceId (NOT horseId) — one call fetches all runners' history
-  - form/fields takes raceId OR meetingDate+track+raceNumber
-  - ratings/meetingratings takes raceId (Professional tier)
 """
 
 import streamlit as st
@@ -160,10 +154,6 @@ def get_horse_id(runner:dict) -> str:
 
 # ── Meetings — ONE call, races already nested ─────────────────
 def fetch_meetings(target_date:date) -> list:
-    """
-    meetingslist returns meetings with races nested. 
-    Checking multiple common keys to ensure races are found.
-    """
     ds = target_date.strftime("%Y-%m-%d")
     data = pf_get("form/meetingslist", {"meetingDate": ds})
     if not data: return []
@@ -174,8 +164,13 @@ def fetch_meetings(target_date:date) -> list:
         tr   = m.get("track") or {}
         name = tr.get("name") or m.get("meetingName") or m.get("venueName") or m.get("trackName") or "Unknown"
         state= tr.get("state") or m.get("state") or ""
-        # Check all possible keys for races
         races= m.get("races") or m.get("Races") or m.get("raceList") or m.get("meetingRaces") or []
+        
+        # FIX: If the API returns no races, create placeholders so the user can click "Load"
+        if not races:
+            for i in range(1, 11):
+                races.append({"raceNumber": i, "raceName": f"Race {i}"})
+        
         m["races"] = races
         for race in races:
             race.setdefault("_meetingName", name)
@@ -197,7 +192,9 @@ def fetch_race_runners(race:dict) -> list:
     if race.get("_meetingName"): params["track"]       = race["_meetingName"]
     rnum = race.get("raceNumber") or race.get("number") or race.get("raceNo")
     if rnum: params["raceNumber"] = str(rnum)
-    if len(params) == 3:
+    
+    # Strategy 2: Fetching by Track + Date + Race Number
+    if len(params) >= 2:
         data = pf_get("form/fields", params)
         rows = extract_payload(data)
         if rows: return rows
@@ -626,7 +623,7 @@ with t_races:
                             if st.session_state.runners:
                                 st.success(f"{len(st.session_state.runners)} runners — go to Analysis tab")
                             else:
-                                st.error("No runners found. Check API Debug panel.")
+                                st.error("No runners found. Click Load again or check if fields are published.")
 
 
 # ════════════════════════════════════════════════
@@ -722,7 +719,8 @@ with t_analysis:
                 f'Book at <strong>{overround}%</strong>  ·  Raw% = 1/SP (includes vig)  ·  '
                 f'True% = de-vigged (Raw% / {overround}%)  ·  '
                 f'Fair Odds = 1/True%  ·  Edge = Model% &minus; True%  ·  Green rows = value</div>',
-                unsafe_allow_html=True)
+                unsafe_allow_html=True
+            )
             sorted_mkt=sorted(runners,key=lambda x: safe_float(x.get("priceSP") or x.get("fixedOddsWin") or 99))
             rows_html=""
             for rank,r in enumerate(sorted_mkt):
@@ -975,8 +973,8 @@ with t_guide:
     st.markdown('<div class="ph"><span class="pt">Guide</span><span class="ps">How the system works</span></div>',unsafe_allow_html=True)
     st.markdown("## API Architecture (why no more 400 errors)")
     st.markdown("""<div class="ic" style="font-family:'IBM Plex Mono',monospace;font-size:.76rem;line-height:2;color:var(--text2)">
-    <strong style="color:var(--text)">meetingslist</strong>  Returns meetings with races ALREADY nested. Never calls form/meeting.<br>
-    <strong style="color:var(--text)">form/fields</strong>   Gets runner list for a race by raceId (or date+track+raceNumber).<br>
+    <strong style="color:var(--text)">meetingslist</strong>  Returns meetings metadata. If races are missing, app creates placeholders.<br>
+    <strong style="color:var(--text)">form/fields</strong>   Gets runner list by track + date + race number (no ID required).<br>
     <strong style="color:var(--text)">form/form</strong>     Takes raceId (not horseId) — returns ALL runners' past form in one call.<br>
     <strong style="color:var(--text)">meetingratings</strong>  PF AI model prices by raceId (Professional tier).<br>
     <strong style="color:var(--text)">meetingsectionals</strong>  Closing sectional benchmarks by raceId (Professional tier).
