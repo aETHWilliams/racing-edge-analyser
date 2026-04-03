@@ -406,45 +406,51 @@ def fetch_meetings(target_date: date) -> list:
     data = pf_get("form/meetingslist", {"meetingDate": ds})
     if not data:
         return []
-    st.session_state["_debug_meetingslist"] = data  # save for debug panel
-    payload = data.get("payLoad", data) if isinstance(data, dict) else data
-    meetings = payload if isinstance(payload, list) else []
-    for meeting in meetings:
-        # Races are ALREADY embedded in meetingslist — no second API call
-        meeting["races"] = (meeting.get("races") or meeting.get("Races") or
-                            meeting.get("raceList") or [])
-        m_name = ((meeting.get("track") or {}).get("name") or
-                  meeting.get("meetingName") or meeting.get("venueName") or "Unknown")
-        m_state = ((meeting.get("track") or {}).get("state") or meeting.get("state") or "")
-        for race in meeting["races"]:
-            race.setdefault("_meetingName", m_name)
-            race.setdefault("_meetingState", m_state)
-            race.setdefault("_meetingDate", ds)
-    return meetings
+    
+    # Extract meeting list from payLoad
+    meetings_raw = data.get("payLoad", []) if isinstance(data, dict) else data
+    if not isinstance(meetings_raw, list):
+        return []
 
-def fetch_race_detail(race: dict) -> list:
-    """Try raceId first, then meetingDate+track+raceNumber, then embedded runners."""
-    race_id = extract_race_id(race)
-    if race_id:
-        data = pf_get("form/fields", {"raceId": race_id})
-        if data:
-            payload = data.get("payLoad", data) if isinstance(data, dict) else data
-            if isinstance(payload, list) and payload:
-                return payload
-    # Fallback: meetingDate + track + raceNumber
-    params = {}
-    if race.get("_meetingDate"): params["meetingDate"] = race["_meetingDate"]
-    if race.get("_meetingName"): params["track"] = race["_meetingName"]
-    rnum = race.get("raceNumber") or race.get("number")
-    if rnum: params["raceNumber"] = str(rnum)
-    if len(params) == 3:
-        data = pf_get("form/fields", params)
-        if data:
-            payload = data.get("payLoad", data) if isinstance(data, dict) else data
-            if isinstance(payload, list) and payload:
-                return payload
-    # Last resort: runners already inside the race dict
-    return race.get("runners") or race.get("fields") or []
+    processed_meetings = []
+    for meeting in meetings_raw:
+        # Use the NEW extract_meeting_id from Step 1
+        mid = extract_meeting_id(meeting)
+        if not mid:
+            continue
+            
+        # Now fetch the actual races for THIS meeting ID
+        rdata = pf_get("form/meeting", {"meetingId": mid})
+        if rdata:
+            r_payload = rdata.get("payLoad", {})
+            if isinstance(r_payload, dict):
+                # Put the races into the meeting object
+                meeting["races"] = r_payload.get("races", [])
+            elif isinstance(r_payload, list):
+                meeting["races"] = r_payload
+            else:
+                meeting["races"] = []
+        else:
+            meeting["races"] = []
+            
+        processed_meetings.append(meeting)
+        
+    return processed_meetings
+
+def fetch_race_runners(race_id: str) -> list:
+    """Fetch runners for a race using the raceId."""
+    if not race_id or str(race_id) == "0":
+        return []
+    
+    data = pf_get("form/fields", {"raceId": str(race_id)})
+    if not data:
+        return []
+    
+    # Extract the list of runners from the payLoad
+    payload = data.get("payLoad", [])
+    if isinstance(payload, dict):
+        return payload.get("runners", [])
+    return payload if isinstance(payload, list) else []
 
 def fetch_runner_form(horse_id: str) -> list:
     if not horse_id or str(horse_id).strip() in ("", "0"):
@@ -455,18 +461,28 @@ def fetch_runner_form(horse_id: str) -> list:
     payload = data.get("payLoad", data) if isinstance(data, dict) else data
     return payload if isinstance(payload, list) else []
 
+def extract_meeting_id(meeting: dict) -> str:
+    """Robustly extract meeting ID from various casing variations."""
+    for field in ["meetingID", "meetingId", "id", "MeetingID"]:
+        val = meeting.get(field)
+        if val and str(val) != "0":
+            return str(val)
+    return ""
+
 def extract_race_id(race: dict) -> str:
-    for field in ["raceId", "RaceId", "race_id", "raceID", "id"]:
+    """Robustly extract race ID from various casing variations."""
+    for field in ["raceID", "raceId", "id", "RaceID"]:
         val = race.get(field)
-        if val and str(val).strip() not in ("", "0"):
-            return str(val).strip()
+        if val and str(val) != "0":
+            return str(val)
     return ""
 
 def extract_horse_id(runner: dict) -> str:
-    for field in ["horseId", "HorseId", "horse_id", "runnerId", "RunnerID", "id"]:
+    """Robustly extract horse/runner ID."""
+    for field in ["horseID", "horseId", "runnerId", "id", "runner_id"]:
         val = runner.get(field)
-        if val and str(val).strip() not in ("", "0"):
-            return str(val).strip()
+        if val and str(val) != "0":
+            return str(val)
     return ""
 
 
