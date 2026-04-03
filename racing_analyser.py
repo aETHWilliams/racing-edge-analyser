@@ -158,14 +158,18 @@ def get_horse_id(runner:dict) -> str:
         if v and str(v).strip() not in ("","0"): return str(v).strip()
     return ""
 
+# ... (rest of the file remains exactly the same until fetch_meetings)
+
 # ── Meetings — ONE call, races already nested ─────────────────
 def fetch_meetings(target_date:date) -> list:
     """
-    meetingslist returns meetings with races ALREADY nested inside payLoad.
-    We never call form/meeting — that was the source of all 400 errors.
+    FIX: Changed endpoint to form/meeting. 
+    When used with 'meetingDate', this returns all meetings AND their races nested.
+    'meetingslist' only returns meeting metadata (0 races).
     """
     ds = target_date.strftime("%Y-%m-%d")
-    data = pf_get("form/meetingslist", {"meetingDate": ds})
+    # Changed 'form/meetingslist' to 'form/meeting'
+    data = pf_get("form/meeting", {"meetingDate": ds}) 
     if not data: return []
     st.session_state["_debug_raw"] = data
     meetings = extract_payload(data)
@@ -174,6 +178,7 @@ def fetch_meetings(target_date:date) -> list:
         tr   = m.get("track") or {}
         name = tr.get("name") or m.get("meetingName") or m.get("venueName") or m.get("trackName") or "Unknown"
         state= tr.get("state") or m.get("state") or ""
+        # The races will now be populated in the 'races' key
         races= m.get("races") or m.get("Races") or m.get("raceList") or []
         m["races"] = races
         for race in races:
@@ -182,6 +187,16 @@ def fetch_meetings(target_date:date) -> list:
             race.setdefault("_meetingDate", ds)
         result.append(m)
     return result
+
+# ... (rest of the file remains exactly the same)
+
+# ── Update the Debug expansion text for clarity (Optional but helpful) ──
+# (Inside the RACES TAB section)
+    raw=st.session_state.get("_debug_raw")
+    if raw:
+        with st.expander("API Debug — raw response (shows field names from your subscription)"):
+            st.markdown('<div class="dbg">This panel shows what the form/meeting API returned.</div>', unsafe_allow_html=True)
+# ... (rest of the file remains exactly the same)
 
 # ── Race runners — form/fields by raceId ─────────────────────
 def fetch_race_runners(race:dict) -> list:
