@@ -1,3 +1,5 @@
+--- START OF FILE Paste April 03, 2026 - 9:54PM ---
+
 """
 Racing Edge Analyser  —  Powered by PuntingForm API v2
 
@@ -5,7 +7,7 @@ Install:  pip install streamlit requests pandas numpy
 Run:      streamlit run racing_analyser.py
 
 KEY API FIXES (root cause of all 400 errors):
-  - meetingslist already returns races nested inside — NEVER call form/meeting
+  - form/meetings (plural) returns meetings with races nested when called with meetingDate.
   - form/form takes raceId (NOT horseId) — one call fetches all runners' history
   - form/fields takes raceId OR meetingDate+track+raceNumber
   - ratings/meetingratings takes raceId (Professional tier)
@@ -158,18 +160,15 @@ def get_horse_id(runner:dict) -> str:
         if v and str(v).strip() not in ("","0"): return str(v).strip()
     return ""
 
-# ... (rest of the file remains exactly the same until fetch_meetings)
-
 # ── Meetings — ONE call, races already nested ─────────────────
 def fetch_meetings(target_date:date) -> list:
     """
-    FIX: Changed endpoint to form/meeting. 
-    When used with 'meetingDate', this returns all meetings AND their races nested.
-    'meetingslist' only returns meeting metadata (0 races).
+    FIX: Using form/meetings (plural) endpoint.
+    When passed a meetingDate, this endpoint returns all meetings and 
+    their races populated in a single nested list.
     """
     ds = target_date.strftime("%Y-%m-%d")
-    # Changed 'form/meetingslist' to 'form/meeting'
-    data = pf_get("form/meeting", {"meetingDate": ds}) 
+    data = pf_get("form/meetings", {"meetingDate": ds})
     if not data: return []
     st.session_state["_debug_raw"] = data
     meetings = extract_payload(data)
@@ -178,7 +177,6 @@ def fetch_meetings(target_date:date) -> list:
         tr   = m.get("track") or {}
         name = tr.get("name") or m.get("meetingName") or m.get("venueName") or m.get("trackName") or "Unknown"
         state= tr.get("state") or m.get("state") or ""
-        # The races will now be populated in the 'races' key
         races= m.get("races") or m.get("Races") or m.get("raceList") or []
         m["races"] = races
         for race in races:
@@ -187,16 +185,6 @@ def fetch_meetings(target_date:date) -> list:
             race.setdefault("_meetingDate", ds)
         result.append(m)
     return result
-
-# ... (rest of the file remains exactly the same)
-
-# ── Update the Debug expansion text for clarity (Optional but helpful) ──
-# (Inside the RACES TAB section)
-    raw=st.session_state.get("_debug_raw")
-    if raw:
-        with st.expander("API Debug — raw response (shows field names from your subscription)"):
-            st.markdown('<div class="dbg">This panel shows what the form/meeting API returned.</div>', unsafe_allow_html=True)
-# ... (rest of the file remains exactly the same)
 
 # ── Race runners — form/fields by raceId ─────────────────────
 def fetch_race_runners(race:dict) -> list:
@@ -593,8 +581,8 @@ with t_races:
 
     raw=st.session_state.get("_debug_raw")
     if raw:
-        with st.expander("API Debug — raw response (shows field names from your subscription)"):
-            st.markdown('<div class="dbg">This panel shows what the meetingslist API returned. Use it to verify field names if runners are not loading.</div>', unsafe_allow_html=True)
+        with st.expander("API Debug — raw response"):
+            st.markdown('<div class="dbg">This panel shows what the form/meetings API returned.</div>', unsafe_allow_html=True)
             meetings_raw=extract_payload(raw)
             if meetings_raw:
                 first=meetings_raw[0]
@@ -605,7 +593,7 @@ with t_races:
                     r0=races_found[0]
                     st.write("**First race keys:**", list(r0.keys()))
                     rid=get_race_id(r0)
-                    st.write(f"**raceId extracted:** `{rid or 'NOT FOUND — check key name above'}`")
+                    st.write(f"**raceId extracted:** `{rid or 'NOT FOUND'}`")
 
     if not st.session_state.races:
         st.markdown('<div class="alert alert-blue">Fetch meetings using the sidebar button.</div>', unsafe_allow_html=True)
@@ -999,7 +987,7 @@ with t_guide:
     st.markdown('<div class="ph"><span class="pt">Guide</span><span class="ps">How the system works</span></div>',unsafe_allow_html=True)
     st.markdown("## API Architecture (why no more 400 errors)")
     st.markdown("""<div class="ic" style="font-family:'IBM Plex Mono',monospace;font-size:.76rem;line-height:2;color:var(--text2)">
-    <strong style="color:var(--text)">meetingslist</strong>  Returns meetings with races ALREADY nested. Never calls form/meeting.<br>
+    <strong style="color:var(--text)">form/meetings</strong>  Returns meetings with races nested when called with meetingDate.<br>
     <strong style="color:var(--text)">form/fields</strong>   Gets runner list for a race by raceId (or date+track+raceNumber).<br>
     <strong style="color:var(--text)">form/form</strong>     Takes raceId (not horseId) — returns ALL runners' past form in one call.<br>
     <strong style="color:var(--text)">meetingratings</strong>  PF AI model prices by raceId (Professional tier).<br>
