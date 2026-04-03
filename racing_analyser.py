@@ -4,8 +4,8 @@ Racing Edge Analyser  —  Powered by PuntingForm API v2
 Install:  pip install streamlit requests pandas numpy
 Run:      streamlit run racing_analyser.py
 
-KEY API FIXES:
-  - form/meetings (plural) returns meetings with races nested when called with meetingDate.
+KEY API FIXES (root cause of all 400 errors):
+  - meetingslist returns meetings. Races may be nested or fetched per-race.
   - form/form takes raceId (NOT horseId) — one call fetches all runners' history
   - form/fields takes raceId OR meetingDate+track+raceNumber
   - ratings/meetingratings takes raceId (Professional tier)
@@ -161,11 +161,11 @@ def get_horse_id(runner:dict) -> str:
 # ── Meetings — ONE call, races already nested ─────────────────
 def fetch_meetings(target_date:date) -> list:
     """
-    FIX: form/meetings (plural) returns meetings with races nested when called with meetingDate.
-    This avoids the 400 error of form/meeting and the empty races of meetingslist.
+    meetingslist returns meetings with races nested. 
+    Checking multiple common keys to ensure races are found.
     """
     ds = target_date.strftime("%Y-%m-%d")
-    data = pf_get("form/meetings", {"meetingDate": ds})
+    data = pf_get("form/meetingslist", {"meetingDate": ds})
     if not data: return []
     st.session_state["_debug_raw"] = data
     meetings = extract_payload(data)
@@ -174,7 +174,8 @@ def fetch_meetings(target_date:date) -> list:
         tr   = m.get("track") or {}
         name = tr.get("name") or m.get("meetingName") or m.get("venueName") or m.get("trackName") or "Unknown"
         state= tr.get("state") or m.get("state") or ""
-        races= m.get("races") or m.get("Races") or m.get("raceList") or []
+        # Check all possible keys for races
+        races= m.get("races") or m.get("Races") or m.get("raceList") or m.get("meetingRaces") or []
         m["races"] = races
         for race in races:
             race.setdefault("_meetingName", name)
@@ -569,8 +570,8 @@ with t_races:
 
     raw=st.session_state.get("_debug_raw")
     if raw:
-        with st.expander("API Debug — raw response"):
-            st.markdown('<div class="dbg">This panel shows what the form/meetings API returned.</div>', unsafe_allow_html=True)
+        with st.expander("API Debug — raw response (shows field names from your subscription)"):
+            st.markdown('<div class="dbg">This panel shows what the meetingslist API returned. Use it to verify field names if runners are not loading.</div>', unsafe_allow_html=True)
             meetings_raw=extract_payload(raw)
             if meetings_raw:
                 first=meetings_raw[0]
@@ -581,7 +582,7 @@ with t_races:
                     r0=races_found[0]
                     st.write("**First race keys:**", list(r0.keys()))
                     rid=get_race_id(r0)
-                    st.write(f"**raceId extracted:** `{rid or 'NOT FOUND'}`")
+                    st.write(f"**raceId extracted:** `{rid or 'NOT FOUND — check key name above'}`")
 
     if not st.session_state.races:
         st.markdown('<div class="alert alert-blue">Fetch meetings using the sidebar button.</div>', unsafe_allow_html=True)
@@ -703,7 +704,7 @@ with t_analysis:
                 prog.progress((i+1)/len(runners))
             st.session_state.ratings=ratings_new; st.session_state.pf_ratings=pf_new
             prog.empty(); sb.empty()
-            st.success(f"Rated {len(runners)} runners")
+            st.success(f"Rated {len(runners)} runners" + (f"  ·  {len(pf_new)} PF AI ratings" if pf_new else "") + (f"  ·  {len(secs_new)} sectional records" if secs_new else ""))
 
         ratings   =st.session_state.ratings
         pf_ratings=st.session_state.pf_ratings
@@ -721,8 +722,7 @@ with t_analysis:
                 f'Book at <strong>{overround}%</strong>  ·  Raw% = 1/SP (includes vig)  ·  '
                 f'True% = de-vigged (Raw% / {overround}%)  ·  '
                 f'Fair Odds = 1/True%  ·  Edge = Model% &minus; True%  ·  Green rows = value</div>',
-                unsafe_allow_html=True
-            )
+                unsafe_allow_html=True)
             sorted_mkt=sorted(runners,key=lambda x: safe_float(x.get("priceSP") or x.get("fixedOddsWin") or 99))
             rows_html=""
             for rank,r in enumerate(sorted_mkt):
@@ -935,7 +935,9 @@ with t_staking:
                     if st.button("Lost",key=f"lost_{idx}"): settle_bet(idx,"Lost"); st.rerun()
 
 
-# ── Bankroll Tab ──────────────────────────────────────────────
+# ════════════════════════════════════════════════
+# BANKROLL TAB
+# ════════════════════════════════════════════════
 with t_bankroll:
     st.markdown('<div class="ph"><span class="pt">Bankroll</span><span class="ps">Performance analytics</span></div>',unsafe_allow_html=True)
     stats=bankroll_stats()
@@ -966,17 +968,28 @@ with t_bankroll:
         if st.button("Reset",type="secondary"): st.session_state.bet_log=[]; st.session_state.bank=st.session_state.starting_bank; st.rerun()
 
 
-# ── Guide Tab ─────────────────────────────────────────────────
+# ════════════════════════════════════════════════
+# GUIDE TAB
+# ════════════════════════════════════════════════
 with t_guide:
     st.markdown('<div class="ph"><span class="pt">Guide</span><span class="ps">How the system works</span></div>',unsafe_allow_html=True)
-    st.markdown("## API Architecture")
+    st.markdown("## API Architecture (why no more 400 errors)")
     st.markdown("""<div class="ic" style="font-family:'IBM Plex Mono',monospace;font-size:.76rem;line-height:2;color:var(--text2)">
-    <strong style="color:var(--text)">form/meetings</strong>  Returns meetings with races nested when called with meetingDate.<br>
+    <strong style="color:var(--text)">meetingslist</strong>  Returns meetings with races ALREADY nested. Never calls form/meeting.<br>
     <strong style="color:var(--text)">form/fields</strong>   Gets runner list for a race by raceId (or date+track+raceNumber).<br>
     <strong style="color:var(--text)">form/form</strong>     Takes raceId (not horseId) — returns ALL runners' past form in one call.<br>
     <strong style="color:var(--text)">meetingratings</strong>  PF AI model prices by raceId (Professional tier).<br>
     <strong style="color:var(--text)">meetingsectionals</strong>  Closing sectional benchmarks by raceId (Professional tier).
     </div>""",unsafe_allow_html=True)
+    st.markdown("## Rating Factors")
+    gdf=pd.DataFrame({"Factor":list(LABELS.values()),"Weight":list(WEIGHTS.values()),
+        "Source":["Closing sectional data (meetingsectionals) + past form closingSectional",
+            "PF speed rating adjusted for class and going","Recency-weighted win/place rate last 6 starts",
+            "Class drop/rise vs average of last 4 starts","Trouble keywords in race comments",
+            "Pace suitability — closers in hot pace, leaders in soft","Weight penalty scaled by distance",
+            "Barrier bias with track-specific adjustments","J+T combo A2E + strike rate",
+            "Win/place at this track (trackRecord + past form)","Win/place at this distance (distanceRecord)"]})
+    st.dataframe(gdf,use_container_width=True,hide_index=True)
     st.markdown("## Market Framing")
     st.markdown("""<div class="ic" style="font-size:.82rem;color:var(--text2);line-height:1.9">
     Australian bookmakers price races at 118–125% overround. A $6.00 favourite has a raw implied probability of 16.7%,
@@ -988,5 +1001,12 @@ with t_guide:
       <div class="ic-sm">Fair Odds = 1/True%<br><span style="color:var(--text3)">equivalent 100% book price</span></div>
       <div class="ic-sm">Edge = Model% &minus; True%<br><span style="color:var(--text3)">positive = value opportunity</span></div>
     </div></div>""",unsafe_allow_html=True)
+    st.markdown("## Tips")
+    for t2,d in [("Rate the whole field","Probabilities are normalised across the field — every runner must be rated for it to work"),
+        ("Sectionals are the strongest signal","At Professional tier, meetingsectionals closing data is the single best predictor"),
+        ("Volume before judgment","Assess ROI after 300+ settled bets — 50 is noise"),
+        ("Track closing line value","Consistently beating the SP closing line is the best leading indicator your model works"),
+        ("Specialise","Metro Thoroughbred handicaps have the most consistent data and are easiest to model")]:
+        st.markdown(f'<div class="ic-sm" style="display:flex;gap:12px;margin-bottom:5px"><span style="color:var(--blue);font-weight:600;flex-shrink:0">—</span><div><div style="font-size:.82rem;color:var(--text)">{t2}</div><div style="font-size:.72rem;color:var(--text3);margin-top:2px">{d}</div></div></div>',unsafe_allow_html=True)
 
 st.markdown('<div style="text-align:center;padding:36px 0 16px;font-family:\'IBM Plex Mono\',monospace;font-size:.6rem;color:#9ca3af;letter-spacing:.1em">RACING EDGE  ·  RESEARCH PURPOSES ONLY  ·  GAMBLE RESPONSIBLY  ·  1800 858 858</div>',unsafe_allow_html=True)
