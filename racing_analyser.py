@@ -8,6 +8,7 @@ KEY API FIXES:
   - form/meetings (plural) returns meetings with races nested when called with meetingDate.
   - form/form takes raceId (NOT horseId) — one call fetches all runners' history
   - form/fields takes raceId OR meetingDate+track+raceNumber
+  - ratings/meetingratings takes raceId (Professional tier)
 """
 
 import streamlit as st
@@ -160,8 +161,8 @@ def get_horse_id(runner:dict) -> str:
 # ── Meetings — ONE call, races already nested ─────────────────
 def fetch_meetings(target_date:date) -> list:
     """
-    FIX: Using form/meetings (plural) endpoint.
-    This endpoint returns meetings with races populated in a single nested list.
+    FIX: form/meetings (plural) returns meetings with races nested when called with meetingDate.
+    This avoids the 400 error of form/meeting and the empty races of meetingslist.
     """
     ds = target_date.strftime("%Y-%m-%d")
     data = pf_get("form/meetings", {"meetingDate": ds})
@@ -650,7 +651,7 @@ with t_analysis:
         st.markdown(
             f'<div class="ph"><span class="pt">Race {rnum} — {rname}</span>'
             f'<span class="ps">{rtrk}  ·  {rdist}m  ·  {rcls}  ·  {rcond or "Condition TBC"}'
-            f'{"  ·  raceId " + rid if rid else "  ·  No raceId"}</span></div>',
+            f'{"  ·  raceId " + rid if rid else "  ·  No raceId (form data unavailable)"}</span></div>',
             unsafe_allow_html=True
         )
 
@@ -679,13 +680,13 @@ with t_analysis:
         cb,ci=st.columns([2,5])
         with cb: rate_btn=st.button("Rate All Runners")
         with ci:
-            st.markdown('<div style="padding-top:8px;font-family:\'IBM Plex Mono\',monospace;font-size:.7rem;color:var(--text3)">Uses raceId to fetch form — avoids 400 error.</div>',unsafe_allow_html=True)
+            st.markdown('<div style="padding-top:8px;font-family:\'IBM Plex Mono\',monospace;font-size:.7rem;color:var(--text3)">Uses raceId to fetch all past form in one call — avoids the meetingId 400 error</div>',unsafe_allow_html=True)
 
         if rate_btn:
             ratings_new={}; pf_new={}; secs_new={}; past_by_hid={}
             prog=st.progress(0); sb=st.empty()
             if rid:
-                sb.markdown('<div class="alert alert-blue">Fetching past form (form/form)...</div>',unsafe_allow_html=True)
+                sb.markdown('<div class="alert alert-blue">Fetching past form (form/form by raceId)...</div>',unsafe_allow_html=True)
                 past_rows=fetch_past_form(rid)
                 for row in past_rows:
                     hid=get_horse_id(row)
@@ -695,7 +696,7 @@ with t_analysis:
                 sb.markdown('<div class="alert alert-blue">Fetching sectional data...</div>',unsafe_allow_html=True)
                 secs_new=fetch_sectionals(rid)
             else:
-                sb.markdown('<div class="alert alert-amber">No raceId — limited analysis.</div>',unsafe_allow_html=True)
+                sb.markdown('<div class="alert alert-amber">No raceId — ratings based on embedded data only. Past form unavailable.</div>',unsafe_allow_html=True)
             for i,runner in enumerate(runners):
                 hid=get_horse_id(runner)
                 ratings_new[hid or f"_i{i}"]=rate_runner(runner, past_by_hid.get(hid,[]), secs_new)
@@ -712,9 +713,16 @@ with t_analysis:
         # Market frame table
         st.markdown("## Market Frame")
         if not mkt:
-            st.markdown('<div class="alert alert-amber">No prices available.</div>',unsafe_allow_html=True)
+            st.markdown('<div class="alert alert-amber">No SP prices available.</div>',unsafe_allow_html=True)
         else:
             sample=next(iter(mkt.values()),{}); overround=sample.get("overround",0)
+            st.markdown(
+                f'<div class="ic-blue" style="margin-bottom:10px;font-family:\'IBM Plex Sans\',sans-serif;font-size:.8rem;color:var(--blue2)">'
+                f'Book at <strong>{overround}%</strong>  ·  Raw% = 1/SP (includes vig)  ·  '
+                f'True% = de-vigged (Raw% / {overround}%)  ·  '
+                f'Fair Odds = 1/True%  ·  Edge = Model% &minus; True%  ·  Green rows = value</div>',
+                unsafe_allow_html=True
+            )
             sorted_mkt=sorted(runners,key=lambda x: safe_float(x.get("priceSP") or x.get("fixedOddsWin") or 99))
             rows_html=""
             for rank,r in enumerate(sorted_mkt):
@@ -727,14 +735,19 @@ with t_analysis:
                 diff=round(mp2*100-tru_p,1) if mp2 else None; is_val=diff is not None and diff>0
                 edge_html=f'<span class="{"edge-pos" if (diff or 0)>0 else "edge-neg"}">{("+" if (diff or 0)>=0 else "")}{diff}%</span>' if diff is not None else "—"
                 bar_w=min(int(tru_p*3),100); bar_c="#059669" if is_val else "#c3d1fa"
+                fav='<span class="fav-b">Fav</span>' if rank==0 else ""
+                val_b='<span class="pill pill-green" style="font-size:.58rem;margin-left:5px">Value</span>' if is_val else ""
+                pf_cell=f'${pf_px:.2f}' if pf_px>0 else "—"
                 rows_html+=f"""
                 <tr class="{'val-row' if is_val else ''}">
-                  <td>{rank+1}</td>
-                  <td><span class="horse-col">{name2}</span></td>
+                  <td style="color:var(--text3);font-size:.72rem;width:22px">{rank+1}</td>
+                  <td><span class="horse-col">{name2}</span>{fav}{val_b}</td>
                   <td style="color:var(--blue);font-weight:600">${sp:.2f}</td>
-                  <td>{tru_p}%</td>
+                  <td style="color:var(--text3)">{raw_p}%</td>
+                  <td><div style="display:flex;align-items:center;gap:6px"><span>{tru_p}%</span>
+                    <div class="prob-bar" style="width:55px"><div class="prob-fill" style="width:{bar_w}%;background:{bar_c}"></div></div></div></td>
                   <td style="color:var(--text2)">${fair:.2f}</td>
-                  <td style="color:var(--blue)">${pf_px:.2f}</td>
+                  <td style="color:var(--blue)">{pf_cell}</td>
                   <td style="color:var(--blue)">{f"{mp2*100:.1f}%" if mp2 else "—"}</td>
                   <td>{edge_html}</td>
                 </tr>"""
@@ -742,10 +755,19 @@ with t_analysis:
             <div class="ic" style="padding:0;overflow:hidden">
               <table class="mkt-table">
                 <thead><tr>
-                  <th>#</th><th>Horse</th><th>SP</th><th>True%</th><th>Fair</th><th>PF AI</th><th>Model%</th><th>Edge</th>
+                  <th>#</th><th>Horse</th><th>SP</th>
+                  <th>Raw%<br><span style="font-weight:400;opacity:.7">incl.vig</span></th>
+                  <th>True%<br><span style="font-weight:400;opacity:.7">de-vigged</span></th>
+                  <th>Fair Odds<br><span style="font-weight:400;opacity:.7">no overround</span></th>
+                  <th>PF AI<br><span style="font-weight:400;opacity:.7">model price</span></th>
+                  <th>Model%<br><span style="font-weight:400;opacity:.7">our estimate</span></th>
+                  <th>Edge<br><span style="font-weight:400;opacity:.7">model-market</span></th>
                 </tr></thead>
                 <tbody>{rows_html}</tbody>
               </table>
+            </div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:.65rem;color:var(--text3);margin-top:6px;margin-bottom:18px">
+              Book: {overround}%  ·  Value = Model% > True%  ·  Green rows have positive model edge
             </div>""", unsafe_allow_html=True)
 
         st.markdown('<hr>',unsafe_allow_html=True)
@@ -755,46 +777,216 @@ with t_analysis:
         for rank,runner in enumerate(sorted(runners,key=sk,reverse=True),1):
             hid    =get_horse_id(runner)
             name   =runner.get("name") or runner.get("runnerName") or runner.get("horseName") or "Unknown"
-            price  =safe_float(runner.get("priceSP") or runner.get("fixedOddsWin") or 0)
+            barrier=runner.get("barrierNumber") or runner.get("barrier") or "?"
+            jockey =(runner.get("jockey") or {}).get("fullName") or runner.get("jockeyName") or "—"
+            trainer=(runner.get("trainer") or {}).get("fullName") or runner.get("trainerName") or "—"
+            weight =runner.get("weightTotal") or runner.get("weightCarried") or runner.get("handicapWeight") or "—"
+            price  =safe_float(runner.get("priceSP") or runner.get("fixedOddsWin") or runner.get("price") or 0)
+            plbl   =PACE_LABELS.get(int(runner.get("pacePosition",3)),"—")
             rating =ratings.get(hid) if hid else None
+            pfr    =pf_ratings.get(hid,{})
             mf     =mkt.get(hid,{})
             mp2    =fp.get(hid,0)
             tj     =runner.get("trainerJockeyA2E_Career") or {}
-            tj_a2e =safe_float(tj.get("a2E",0))
-            
+            tj_a2e =safe_float(tj.get("a2E",0)); tj_sr=safe_float(tj.get("strikeRate",0))
+            tj_runs=safe_float(tj.get("runners",0))
+
+            verdict=None
+            if rating and mf and mp2:
+                verdict=value_check(mp2,mf["true_pct"],price,rating["pct"],tj_a2e,st.session_state.min_rating)
+
             ps=f"${price:.2f}" if price>0 else "N/A"
             ms=f"  Model {round(mp2*100,1)}%" if mp2 else ""
-            label=f"#{rank}  {name}   {ps}{ms}"
+            mks=f"  Mkt {mf.get('true_pct','?')}%" if mf else ""
+            es="" if not verdict else f"  Edge {'+' if verdict['edge_pct']>=0 else ''}{verdict['edge_pct']}%"
+            bf="  [BET]" if (verdict and verdict["bet"]) else ""
+            label=f"#{rank}  {name}   B{barrier}   {ps}{ms}{mks}{es}{bf}"
 
-            with st.expander(label):
-                if rating and mf and mp2:
-                    verdict=value_check(mp2,mf["true_pct"],price,rating["pct"],tj_a2e,st.session_state.min_rating)
-                    if verdict["bet"]:
-                        rec=calc_stake(st.session_state.bank,mp2,price,st.session_state.staking_method,
-                            st.session_state.kelly_fraction,st.session_state.flat_stake_pct,
-                            st.session_state.level_stake,st.session_state.max_stake_pct)
-                        st.markdown(f'<div class="stake-card"><div class="ml">Stake</div><div class="stake-amt">${rec["stake"]:.2f}</div></div>',unsafe_allow_html=True)
-                        if st.button(f"Log Bet — {name}",key=f"log_{hid}"):
-                            log_bet(name,f"Race {rnum}",rec["stake"],price,verdict["edge_pct"])
-                            st.success("Logged")
+            with st.expander(label,expanded=(rank<=2 or bool(verdict and verdict["bet"]))):
+                left,right=st.columns([3,2])
+                with left:
+                    ppill={"Leader":"pill-red","On Pace":"pill-amber","Midfield":"pill-blue","Back":"pill-muted","Last":"pill-muted"}.get(plbl,"pill-muted")
+                    st.markdown(f'<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:12px"><span class="pill pill-muted">B{barrier}</span><span class="pill {ppill}">{plbl}</span><span class="pill pill-muted">{weight}kg</span></div>',unsafe_allow_html=True)
+                    st.markdown(f'<div style="font-family:\'IBM Plex Sans\',sans-serif;font-size:.78rem;color:var(--text2);line-height:1.9;margin-bottom:10px"><span style="color:var(--text3);font-size:.65rem;text-transform:uppercase;letter-spacing:.05em">Jockey</span>&nbsp;&nbsp;{jockey}<br><span style="color:var(--text3);font-size:.65rem;text-transform:uppercase;letter-spacing:.05em">Trainer</span>&nbsp;&nbsp;{trainer}</div>',unsafe_allow_html=True)
+                    cw=safe_float(runner.get("winPct",0)); cp=safe_float(runner.get("placePct",0))
+                    tr2=runner.get("trackRecord") or {}; dr=runner.get("distanceRecord") or {}
+                    ts=safe_float(tr2.get("starts",0)); tw=safe_float(tr2.get("firsts",0))
+                    ds2=safe_float(dr.get("starts",0)); dw=safe_float(dr.get("firsts",0))
+                    tsr2=round(tw/ts*100,1) if ts>0 else 0; dsr=round(dw/ds2*100,1) if ds2>0 else 0
+                    st.markdown(
+                        f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:12px">'
+                        f'<div class="ic-sm"><div class="ml">Career Win%</div><div style="font-family:\'IBM Plex Mono\',monospace;font-size:.95rem">{cw:.1f}%</div></div>'
+                        f'<div class="ic-sm"><div class="ml">Career Place%</div><div style="font-family:\'IBM Plex Mono\',monospace;font-size:.95rem">{cp:.1f}%</div></div>'
+                        f'<div class="ic-sm"><div class="ml">Track ({int(tw)}/{int(ts)})</div><div style="font-family:\'IBM Plex Mono\',monospace;font-size:.95rem;color:{"var(--green)" if tsr2>20 else "var(--text)"}">{tsr2}%</div></div>'
+                        f'<div class="ic-sm"><div class="ml">Distance ({int(dw)}/{int(ds2)})</div><div style="font-family:\'IBM Plex Mono\',monospace;font-size:.95rem;color:{"var(--green)" if dsr>20 else "var(--text)"}">{dsr}%</div></div>'
+                        f'</div>',unsafe_allow_html=True)
+                    if tj_runs>=5:
+                        a2ec="var(--green)" if tj_a2e>=1.0 else "var(--red)"
+                        st.markdown(f'<div class="ic-sm" style="margin-bottom:12px"><div class="ml" style="margin-bottom:5px">J+T Combo ({int(tj_runs)} runs)</div><div style="font-family:\'IBM Plex Mono\',monospace;font-size:.8rem;display:flex;gap:18px"><span>SR <span style="color:var(--text)">{tj_sr:.1f}%</span></span><span>A2E <span style="color:{a2ec};font-weight:600">{tj_a2e:.2f}</span></span></div></div>',unsafe_allow_html=True)
+                    pf_px=safe_float(pfr.get("pfAiPrice") or pfr.get("modelPrice") or 0)
+                    pf_rank=pfr.get("pfAiRank") or pfr.get("rank")
+                    if pf_px>0:
+                        pf_val=price>0 and pf_px>price
+                        pfc="var(--green)" if pf_val else "var(--text)"
+                        st.markdown(f'<div class="ic-blue" style="margin-bottom:12px"><div class="ml" style="margin-bottom:5px;color:var(--blue2)">PF AI Rating</div><div style="font-family:\'IBM Plex Mono\',monospace;display:flex;gap:16px;font-size:.82rem"><span>Model ${pf_px:.2f} <span style="color:{pfc};font-weight:600"></span></span>{"<span>Rank " + str(pf_rank) + "</span>" if pf_rank else ""}</div>{"<div style=\'margin-top:4px;font-size:.72rem;color:var(--green)\'>PF AI model price longer than SP — value signal</div>" if pf_val else ""}</div>',unsafe_allow_html=True)
+                    if rating:
+                        rc="var(--green)" if rating["pct"]>=65 else "var(--amber)" if rating["pct"]>=45 else "var(--red)"
+                        st.markdown(f'<div class="ml" style="margin-bottom:4px">Composite Rating</div><div style="display:flex;align-items:baseline;gap:8px;margin-bottom:5px"><span style="font-family:\'IBM Plex Mono\',monospace;font-size:1.6rem;font-weight:600;color:{rc}">{rating["composite"]}</span><span style="font-family:\'IBM Plex Mono\',monospace;font-size:.7rem;color:var(--text3)">/ {MAX_SCORE}  ({rating["pct"]}%)</span></div><div class="prob-bar" style="margin-bottom:12px"><div class="prob-fill" style="width:{int(rating["pct"])}%;background:{rc}"></div></div>',unsafe_allow_html=True)
+                        for key,mx in WEIGHTS.items():
+                            val=rating.get(key,0); pct=int(val/mx*100) if mx else 0
+                            bc="var(--blue)" if pct>=65 else "var(--amber)" if pct>=35 else "var(--red)"
+                            st.markdown(f'<div class="comp-row"><span class="comp-name">{LABELS[key]}</span><div style="flex:1;background:var(--border);border-radius:2px;height:2px"><div style="width:{pct}%;height:2px;background:{bc};border-radius:2px"></div></div><span class="comp-score">{val:.1f}/{mx}</span></div>',unsafe_allow_html=True)
+
+                with right:
+                    if not rating and not mf:
+                        st.markdown('<div class="alert alert-blue">Click Rate All Runners to see analysis.</div>',unsafe_allow_html=True)
+                    elif price<=1:
+                        st.markdown('<div class="alert alert-amber">No SP price available.</div>',unsafe_allow_html=True)
                     else:
-                        st.markdown(f'<div class="alert alert-red">No bet: {", ".join(verdict["reasons"])}</div>',unsafe_allow_html=True)
+                        if mf and mp2:
+                            tp=mf["true_pct"]; rp=mf["raw_pct"]; fro=mf["fair_odds"]
+                            mp_p=round(mp2*100,1); diff=round(mp_p-tp,1); dc="var(--green)" if diff>0 else "var(--red)"
+                            st.markdown(
+                                f'<div class="ic" style="margin-bottom:10px">'
+                                f'<div class="ml" style="margin-bottom:10px">Probability Breakdown</div>'
+                                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">'
+                                f'<div><div class="ml">SP Odds</div><div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.05rem;color:var(--blue);font-weight:600">${price:.2f}</div></div>'
+                                f'<div><div class="ml">Fair Odds</div><div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.05rem">${fro:.2f}</div></div>'
+                                f'<div><div class="ml">Raw Mkt%</div><div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.05rem;color:var(--text3)">{rp}%</div></div>'
+                                f'<div><div class="ml">True Mkt%</div><div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.05rem">{tp}%</div></div>'
+                                f'<div><div class="ml">Model%</div><div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.05rem;color:var(--blue);font-weight:600">{mp_p}%</div></div>'
+                                f'<div><div class="ml">Edge</div><div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.05rem;color:{dc};font-weight:600">{"+" if diff>=0 else ""}{diff}%</div></div>'
+                                f'</div><div class="ic-sm" style="font-size:.72rem;color:var(--text3)">Book at {mf.get("overround","?")}% — compare model to True% not Raw%.</div></div>',
+                                unsafe_allow_html=True)
+                        if verdict:
+                            g=verdict["gates"]
+                            def gp(ok): return ("pill-green","Pass") if ok else ("pill-red","Fail")
+                            g1c,g1t=gp(g["has_edge"]); g2c,g2t=gp(g["rating_ok"])
+                            g3c,g3t=gp(g["tj_ok"]);    g4c,g4t=gp(g["odds_ok"])
+                            st.markdown(
+                                f'<div class="ic" style="margin-bottom:10px">'
+                                f'<div class="ml" style="margin-bottom:10px">Bet Gates</div>'
+                                f'<div class="gate-row"><span class="pill {g1c}" style="width:38px;text-align:center">{g1t}</span><span class="gate-lbl">Positive model edge</span></div>'
+                                f'<div class="gate-row"><span class="pill {g2c}" style="width:38px;text-align:center">{g2t}</span><span class="gate-lbl">Rating {rating["pct"] if rating else "?"}% &ge; {st.session_state.min_rating}%</span></div>'
+                                f'<div class="gate-row"><span class="pill {g3c}" style="width:38px;text-align:center">{g3t}</span><span class="gate-lbl">T+J A2E {tj_a2e:.2f} &ge; 1.0  (SR {tj_sr:.1f}%)</span></div>'
+                                f'<div class="gate-row"><span class="pill {g4c}" style="width:38px;text-align:center">{g4t}</span><span class="gate-lbl">SP ${price:.2f} &ge; ${st.session_state.min_odds}</span></div>'
+                                f'</div>',unsafe_allow_html=True)
+                            if verdict["bet"]:
+                                rec=calc_stake(st.session_state.bank,mp2,price,st.session_state.staking_method,
+                                    st.session_state.kelly_fraction,st.session_state.flat_stake_pct,
+                                    st.session_state.level_stake,st.session_state.max_stake_pct)
+                                evc="var(--green)" if rec["ev"]>=0 else "var(--red)"
+                                st.markdown(f'<div class="stake-card"><div class="ml" style="margin-bottom:6px">{st.session_state.staking_method} Stake</div><div class="stake-amt">${rec["stake"]:.2f}</div><div style="font-family:\'IBM Plex Mono\',monospace;font-size:.72rem;color:{evc};margin-top:4px">EV ${rec["ev"]:+.2f}  ·  {rec["pct"]}% of bank</div></div>',unsafe_allow_html=True)
+                                st.markdown('<div class="alert alert-green">BET — all gates pass</div>',unsafe_allow_html=True)
+                                if st.button(f"Log — {name}",key=f"log_{hid}_{rank}"):
+                                    log_bet(name,f"{rtrk} R{rnum}",rec["stake"],price,verdict["edge_pct"])
+                                    st.success("Logged")
+                            else:
+                                st.markdown(f'<div class="alert alert-red">No bet — {"  ·  ".join(verdict["reasons"])}</div>',unsafe_allow_html=True)
+
+                nk=f"{hid}_{rid}"
+                note=st.text_area("Notes",value=st.session_state.notes.get(nk,""),key=f"note_{hid}_{rank}",height=50,placeholder="Analysis notes...")
+                st.session_state.notes[nk]=note
+
 
 # ════════════════════════════════════════════════
-# OTHER TABS (Simplified for stability)
+# STAKING TAB
 # ════════════════════════════════════════════════
 with t_staking:
+    st.markdown('<div class="ph"><span class="pt">Staking</span><span class="ps">Methods, rules and bet log</span></div>',unsafe_allow_html=True)
+    st.markdown("## Staking Methods")
+    c1,c2,c3=st.columns(3)
+    for col,title,pc2,body in [
+        (c1,"Kelly Criterion","pill-blue","Mathematically optimal. Stakes proportional to edge.<br><br><code>f = (bp &minus; q) / b</code><br><br>Use Quarter Kelly (0.25) to reduce variance without sacrificing most of the long-run growth."),
+        (c2,"Flat Percentage","pill-muted","Fixed % of bank on every qualifying bet. Scales down during losing runs.<br><br>Simpler than Kelly but treats all edges equally."),
+        (c3,"Level Stakes","pill-muted","Fixed dollar per bet regardless of edge or bank.<br><br>Easiest for tracking ROI. Offers no bank protection during drawdowns."),
+    ]:
+        col.markdown(f'<div class="ic"><div style="margin-bottom:10px"><span class="pill {pc2}">{title}</span></div><div style="font-size:.8rem;color:var(--text2);line-height:1.8">{body}</div></div>',unsafe_allow_html=True)
+    bpct=st.session_state.bank/st.session_state.starting_bank*100 if st.session_state.starting_bank else 100
+    if bpct<70: st.markdown(f'<div class="alert alert-red">Stop-loss — bank at {bpct:.1f}%. Halve stakes until above 85%.</div>',unsafe_allow_html=True)
+    st.markdown("## Discipline Rules")
+    for rule,detail in [
+        (f"Never exceed {st.session_state.max_stake_pct:.1f}% per bet","Absolute limit regardless of confidence"),
+        ("Compare model% to True% not Raw%","Raw SP% includes overround — de-vig before assessing value"),
+        ("Stop-loss at 70% of starting bank","Cut stakes 50% until recovered above 85%"),
+        ("Log every bet — including losers","Discipline only works with honest records"),
+        ("Do not override the model","Emotional bets erode edge over time"),
+        ("Minimum 200 bets before judging ROI","50 bets is statistical noise"),
+        ("Pre-race data only","This tool rates on pre-race information — not in-running"),
+        ("Never chase losses","Staking is applied mechanically — not reactively"),
+    ]:
+        st.markdown(f'<div class="ic-sm" style="display:flex;gap:12px;margin-bottom:5px"><span style="color:var(--blue);font-weight:600;flex-shrink:0">—</span><div><div style="font-size:.82rem;color:var(--text)">{rule}</div><div style="font-size:.72rem;color:var(--text3);margin-top:2px">{detail}</div></div></div>',unsafe_allow_html=True)
     st.markdown("## Bet Log")
-    if st.session_state.bet_log:
-        df=pd.DataFrame(st.session_state.bet_log)
-        st.dataframe(df,use_container_width=True)
+    log=st.session_state.bet_log
+    if not log:
+        st.markdown('<div class="alert alert-blue">No bets logged yet.</div>',unsafe_allow_html=True)
     else:
-        st.write("No bets logged.")
+        df=pd.DataFrame(log)
+        st.dataframe(df[["datetime","horse","race","stake","odds","edge","result","pl"]].rename(columns={"datetime":"Time","horse":"Horse","race":"Race","stake":"Stake $","odds":"Odds","edge":"Edge %","result":"Result","pl":"P/L $"}),use_container_width=True,hide_index=True)
+        pending=[(i,b) for i,b in enumerate(log) if b["result"]=="Pending"]
+        if pending:
+            st.markdown("## Settle Bets")
+            for idx,bet in pending:
+                c1,c2,c3=st.columns([5,1,1])
+                with c1: st.markdown(f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:.8rem;padding:6px 0"><span style="color:var(--blue)">{bet["horse"]}</span>&nbsp;&nbsp;<span style="color:var(--text3)">${bet["stake"]:.2f} @ {bet["odds"]}</span></div>',unsafe_allow_html=True)
+                with c2:
+                    if st.button("Won",key=f"won_{idx}"): settle_bet(idx,"Won"); st.rerun()
+                with c3:
+                    if st.button("Lost",key=f"lost_{idx}"): settle_bet(idx,"Lost"); st.rerun()
 
+
+# ── Bankroll Tab ──────────────────────────────────────────────
 with t_bankroll:
-    st.metric("Current Bank", f"${st.session_state.bank:.2f}")
+    st.markdown('<div class="ph"><span class="pt">Bankroll</span><span class="ps">Performance analytics</span></div>',unsafe_allow_html=True)
+    stats=bankroll_stats()
+    if not stats:
+        st.markdown('<div class="alert alert-blue">No settled bets yet.</div>',unsafe_allow_html=True)
+    else:
+        plc="green" if stats["pl"]>=0 else "red"; roic="green" if stats["roi"]>=0 else "red"
+        st.markdown(f"""<div class="mg">
+          <div class="mc"><div class="ml">Bank</div><div class="mv blue">${stats['bank']:.0f}</div></div>
+          <div class="mc"><div class="ml">Total P/L</div><div class="mv {plc}">{'+' if stats['pl']>=0 else ''}${stats['pl']:.2f}</div></div>
+          <div class="mc"><div class="ml">ROI</div><div class="mv {roic}">{'+' if stats['roi']>=0 else ''}{stats['roi']:.1f}%</div></div>
+          <div class="mc"><div class="ml">Strike Rate</div><div class="mv">{stats['sr']:.1f}%</div></div>
+          <div class="mc"><div class="ml">Bets</div><div class="mv">{stats['bets']}</div></div>
+          <div class="mc"><div class="ml">Winners</div><div class="mv">{stats['winners']}</div></div>
+          <div class="mc"><div class="ml">Avg Odds</div><div class="mv">{stats['avg_odds']}</div></div>
+          <div class="mc"><div class="ml">Max Drawdown</div><div class="mv red">-${abs(stats['max_dd']):.2f}</div></div>
+        </div>""",unsafe_allow_html=True)
+        settled=[b for b in st.session_state.bet_log if b["result"]!="Pending"]
+        st.markdown("## Cumulative P/L")
+        pl_s=[0]+list(pd.Series([b["pl"] for b in settled]).cumsum())
+        st.line_chart(pd.DataFrame({"Bet":range(len(pl_s)),"P/L ($)":pl_s}).set_index("Bet"))
+        st.markdown("## By Odds Range")
+        def bkt(o): return "< 2.0" if o<2 else "2.0–4.0" if o<4 else "4.0–7.0" if o<7 else "7.0–12.0" if o<12 else "12.0+"
+        df_s=pd.DataFrame(settled); df_s["Range"]=df_s["odds"].apply(bkt)
+        grp=df_s.groupby("Range").agg(Bets=("pl","count"),PL=("pl","sum"),Staked=("stake","sum")).reset_index()
+        grp["ROI %"]=(grp["PL"]/grp["Staked"]*100).round(1)
+        st.dataframe(grp,use_container_width=True,hide_index=True)
+        if st.button("Reset",type="secondary"): st.session_state.bet_log=[]; st.session_state.bank=st.session_state.starting_bank; st.rerun()
 
+
+# ── Guide Tab ─────────────────────────────────────────────────
 with t_guide:
-    st.write("Using PuntingForm V2 API. Ensure your key is valid.")
+    st.markdown('<div class="ph"><span class="pt">Guide</span><span class="ps">How the system works</span></div>',unsafe_allow_html=True)
+    st.markdown("## API Architecture")
+    st.markdown("""<div class="ic" style="font-family:'IBM Plex Mono',monospace;font-size:.76rem;line-height:2;color:var(--text2)">
+    <strong style="color:var(--text)">form/meetings</strong>  Returns meetings with races nested when called with meetingDate.<br>
+    <strong style="color:var(--text)">form/fields</strong>   Gets runner list for a race by raceId (or date+track+raceNumber).<br>
+    <strong style="color:var(--text)">form/form</strong>     Takes raceId (not horseId) — returns ALL runners' past form in one call.<br>
+    <strong style="color:var(--text)">meetingratings</strong>  PF AI model prices by raceId (Professional tier).<br>
+    <strong style="color:var(--text)">meetingsectionals</strong>  Closing sectional benchmarks by raceId (Professional tier).
+    </div>""",unsafe_allow_html=True)
+    st.markdown("## Market Framing")
+    st.markdown("""<div class="ic" style="font-size:.82rem;color:var(--text2);line-height:1.9">
+    Australian bookmakers price races at 118–125% overround. A $6.00 favourite has a raw implied probability of 16.7%,
+    but in a 122% book its <strong>true probability is only 13.7%</strong> (16.7/122). You must beat 13.7% to have value —
+    not 16.7%. This is why this app always shows both Raw% and True%.<br><br>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px;font-family:'IBM Plex Mono',monospace;font-size:.76rem">
+      <div class="ic-sm">Raw% = 1/SP<br><span style="color:var(--text3)">includes full overround</span></div>
+      <div class="ic-sm">True% = Raw% / sum(Raw%)<br><span style="color:var(--text3)">de-vigged true probability</span></div>
+      <div class="ic-sm">Fair Odds = 1/True%<br><span style="color:var(--text3)">equivalent 100% book price</span></div>
+      <div class="ic-sm">Edge = Model% &minus; True%<br><span style="color:var(--text3)">positive = value opportunity</span></div>
+    </div></div>""",unsafe_allow_html=True)
 
-st.markdown('<div style="text-align:center;padding:36px 0;font-size:.6rem;color:#9ca3af">RACING EDGE · ANALYSER</div>',unsafe_allow_html=True)
+st.markdown('<div style="text-align:center;padding:36px 0 16px;font-family:\'IBM Plex Mono\',monospace;font-size:.6rem;color:#9ca3af;letter-spacing:.1em">RACING EDGE  ·  RESEARCH PURPOSES ONLY  ·  GAMBLE RESPONSIBLY  ·  1800 858 858</div>',unsafe_allow_html=True)
