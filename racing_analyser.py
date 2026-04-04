@@ -445,9 +445,10 @@ DEFAULTS = {
     "min_edge": 3.0, "min_tj_a2e": 0.8,
     "notes": {},
     "_api_log": [],
-    "_live_prices": {},   # {horse_name: price}  — scraped live
-    "_live_prices_ts": None,  # datetime of last scrape
+    "_live_prices": {},
+    "_live_prices_ts": None,
     "_live_source": "",
+    "_model_reasoning": {},
     "fetch_status": "", "fetch_count": 0,
 }
 for k, v in DEFAULTS.items():
@@ -876,12 +877,14 @@ def fetch_form_for_race(race: dict) -> list:
     track = race.get("_meetingName", "")
     rnum  = str(race.get("raceNumber") or race.get("number") or "1")
     rid   = get_race_id(race)
-    if rid:
+    # Only call with raceId if we have a valid non-zero one
+    if rid and rid not in ("0", ""):
         data = pf_get("form/form", {"raceId": rid}, silent=True)
         rows = extract_runners_from_payload(data) if data else []
         if rows: return rows
+    # Always try by date+track+raceNumber (silent to suppress 400 noise)
     if ds and track and rnum:
-        data = pf_get("form/form", {"meetingDate": ds, "track": track, "raceNumber": rnum})
+        data = pf_get("form/form", {"meetingDate": ds, "track": track, "raceNumber": rnum}, silent=True)
         rows = extract_runners_from_payload(data) if data else []
         if rows: return rows
     return []
@@ -1124,52 +1127,324 @@ def frame_market(runners):
                   "source": price_source_label(r)}
     return out
 
-def compute_model_prob(runner, rating, pf_r={}):
-    signals,weights=[],[]
-    pf_px=safe_float(pf_r.get("pfAiPrice") or pf_r.get("modelPrice") or 0)
-    if pf_px>1.0: signals.append(1/pf_px); weights.append(4.5)
-    rat_pct=rating.get("pct",50)/100 if rating else 0.5
-    rat_prob=max(0.01,min(0.95,(rat_pct**1.5)*0.4))
-    signals.append(rat_prob); weights.append(1.5)
-    cw=safe_float(runner.get("winPct",0))/100
-    if cw>0: signals.append(cw); weights.append(2.0)
-    tr=runner.get("trackRecord") or {}
-    ts=safe_float(tr.get("starts",0)); tw2=safe_float(tr.get("firsts",0))
-    if ts>=3: signals.append(tw2/ts); weights.append(1.5)
-    dr=runner.get("distanceRecord") or {}
-    ds2=safe_float(dr.get("starts",0)); dw=safe_float(dr.get("firsts",0))
-    if ds2>=3: signals.append(dw/ds2); weights.append(1.3)
-    tj=runner.get("trainerJockeyA2E_Career") or {}
-    tj_sr=safe_float(tj.get("strikeRate",0))/100
-    if safe_float(tj.get("runners",0))>=10 and tj_sr>0: signals.append(tj_sr); weights.append(1.2)
-    ls_pos=safe_float((runner.get("lastStart") or {}).get("finishingPosition",99))
-    if ls_pos==1: signals.append(min(cw*2.5+0.05,0.5)); weights.append(0.8)
-    elif ls_pos>=8: signals.append(max(cw*0.5,0.01)); weights.append(0.5)
-    if not signals: return 0.05
-    total_w=sum(weights)
-    return min(max(round(sum(s*w for s,w in zip(signals,weights))/total_w,5),0.005),0.95)
+def compute_model_prob(runner, rating, pf_r={}, past=[]):
+    """
+    Returns a raw (un-normalised) score for this runner.
+    We purposely keep it proportional to winning probability rather than
+    anchoring to an absolute %, because softmax normalisation in
+    normalise_field() will handle the field-level constraint.
+    """
+    signals, weights = [], []
 
-def normalise_field(runners, ratings, pf_ratings):
-    raw={get_horse_id(r): compute_model_prob(r,ratings.get(get_horse_id(r),{}),pf_ratings.get(get_horse_id(r),{})) for r in runners}
-    total=sum(raw.values())
-    if total<=0: return raw
-    return {k:round(v/total,5) for k,v in raw.items()}
+    # 1. PF AI model price — strongest signal when available
+    pf_px = safe_float(pf_r.get("pfAiPrice") or pf_r.get("modelPrice") or 0)
+    if pf_px > 1.0:
+        signals.append(1.0 / pf_px)
+        weights.append(5.0)
+
+    # 2. Composite rating → softmax-ready score
+    #    Use exponential transform so differences in rating are amplified
+    #    (avoids the longshot bias of linear scaling)
+    rat_pct = rating.get("pct", 50) / 100.0 if rating else 0.5
+    # Scale: exp(rating * 3) keeps favourites appropriately dominant
+    rat_signal = np.exp(rat_pct * 3.0)
+    signals.append(rat_signal / np.exp(3.0))   # normalise against max=1
+    weights.append(2.5)
+
+    # 3. Career win% — calibrated form signal
+    cw = safe_float(runner.get("winPct", 0)) / 100.0
+    if cw > 0:
+        signals.append(cw)
+        weights.append(2.0)
+
+    # 4. Track & distance records
+    tr = runner.get("trackRecord") or {}
+    ts = safe_float(tr.get("starts", 0)); tw2 = safe_float(tr.get("firsts", 0))
+    if ts >= 3:
+        signals.append(tw2 / ts)
+        weights.append(1.5)
+
+    dr = runner.get("distanceRecord") or {}
+    ds2 = safe_float(dr.get("starts", 0)); dw = safe_float(dr.get("firsts", 0))
+    if ds2 >= 3:
+        signals.append(dw / ds2)
+        weights.append(1.3)
+
+    # 5. J+T A2E — only if statistically significant
+    tj = runner.get("trainerJockeyA2E_Career") or {}
+    tj_sr = safe_float(tj.get("strikeRate", 0)) / 100.0
+    tj_a2e = safe_float(tj.get("a2E", 0))
+    tj_runs = safe_float(tj.get("runners", 0))
+    if tj_runs >= 15 and tj_a2e > 0:
+        # A2E > 1.0 means J+T combo outperforms market expectations
+        # Map: A2E=1.0→ neutral, A2E=1.5→ boost, A2E=0.5→ discount
+        signals.append(min(tj_sr * tj_a2e, 0.6))
+        weights.append(1.5)
+
+    # 6. Days since last run — fitness curve
+    days_penalty = 0.0
+    if past:
+        s = str(past[0].get("raceDate") or past[0].get("date") or "")[:10]
+        try:
+            ld = datetime.strptime(s, "%Y-%m-%d").date()
+            days = (date.today() - ld).days
+            if 14 <= days <= 21:
+                days_penalty = 0.04     # peak fitness window — boost
+            elif days <= 7:
+                days_penalty = 0.01     # very recent — slight risk of fatigue
+            elif days > 100:
+                days_penalty = -0.06    # lengthy absence — discount
+            elif days > 60:
+                days_penalty = -0.03
+        except:
+            pass
+
+    # 7. "Puncture" angle — last start beaten early, potential bounce-back
+    #    Identifies horses that led/pressed but faded (ran too fast early)
+    puncture_boost = 0.0
+    if past and len(past) >= 1:
+        last = past[0]
+        ls_pos = safe_float(last.get("finishingPosition", 99))
+        ls_early = safe_float(last.get("positionEarly") or last.get("firstPosition") or 0)
+        ls_comment = (last.get("raceComment") or last.get("comments") or "").lower()
+        # Was in top 3 early but finished 5+? → possible puncture
+        if 0 < ls_early <= 3 and ls_pos >= 5:
+            puncture_boost = 0.05
+        # Comment clues
+        puncture_keywords = ["tired", "weakened", "gave way", "peaked", "flattened", "not run on"]
+        if any(k in ls_comment for k in puncture_keywords):
+            puncture_boost = max(puncture_boost, 0.04)
+
+    # 8. Weight impact — penalise heavy carriers in sprint/middle distances
+    w_carried = safe_float(runner.get("weightTotal") or runner.get("weightCarried") or
+                           runner.get("handicapWeight") or 57)
+    dist = safe_float(runner.get("distance") or runner.get("raceDistance") or 1200)
+    weight_penalty = 0.0
+    if w_carried > 58 and dist >= 1200:
+        # Each kg over 58 costs ~0.6% probability in relevant distances
+        weight_penalty = -(w_carried - 58) * 0.006
+
+    # Aggregate
+    if not signals:
+        base = 0.05
+    else:
+        total_w = sum(weights)
+        base = sum(s * w for s, w in zip(signals, weights)) / total_w
+
+    final = max(0.005, min(0.95, base + days_penalty + puncture_boost + weight_penalty))
+    return round(final, 5), {
+        "pf_signal": round(1.0/pf_px, 4) if pf_px > 1 else None,
+        "rat_signal": round(rat_pct, 3),
+        "career_win": round(cw, 3),
+        "tj_a2e": round(tj_a2e, 2),
+        "tj_runs": int(tj_runs),
+        "days_penalty": round(days_penalty, 3),
+        "puncture_boost": round(puncture_boost, 3),
+        "weight_penalty": round(weight_penalty, 3),
+        "base": round(base, 4),
+        "final_raw": round(final, 5),
+    }
+
+
+def normalise_field(runners, ratings, pf_ratings, past_all={}):
+    """
+    True softmax normalisation:  p_h = exp(R_h) / Σ exp(R_i)
+    This ensures probabilities sum to 1 and respects field-level competition.
+    Returns both probs and per-runner reasoning dicts.
+    """
+    raw_scores, reasoning = {}, {}
+    for r in runners:
+        hid = get_horse_id(r)
+        prob, reason = compute_model_prob(
+            r,
+            ratings.get(hid, {}),
+            pf_ratings.get(hid, {}),
+            past_all.get(hid, [])
+        )
+        raw_scores[hid] = prob
+        reasoning[hid] = reason
+
+    # Softmax over raw scores — use log-space for numerical stability
+    scores_arr = np.array(list(raw_scores.values()), dtype=float)
+    # Subtract max for numerical stability
+    scores_arr = scores_arr - scores_arr.max()
+    exp_arr = np.exp(scores_arr * 4.0)   # scale=4 keeps spread tight enough
+    softmax_arr = exp_arr / exp_arr.sum()
+
+    hids = list(raw_scores.keys())
+    probs = {hid: round(float(p), 5) for hid, p in zip(hids, softmax_arr)}
+
+    # Store reasoning in session state for display
+    st.session_state["_model_reasoning"] = reasoning
+    return probs
+
+
+def compute_ev_metrics(model_prob: float, sp: float) -> dict:
+    """
+    Core EV equation:  EV = (P_win × net_profit) - (P_loss × stake)
+    Assuming stake = $1:  EV = P_win × (sp-1) - P_loss × 1
+    Also compute Kelly fraction and A/E-style diagnostics.
+    """
+    if sp <= 1.0 or model_prob <= 0:
+        return {"ev": 0, "ev_pct": 0, "kelly_f": 0, "fair_odds": 0, "overlay_pct": 0}
+    ev = model_prob * (sp - 1) - (1 - model_prob)
+    fair_odds = round(1.0 / model_prob, 2)
+    overlay_pct = round((sp - fair_odds) / fair_odds * 100, 1)   # how much above fair value
+    kelly_f = max(0, (model_prob * (sp - 1) - (1 - model_prob)) / (sp - 1))
+    return {
+        "ev": round(ev, 4),
+        "ev_pct": round(ev * 100, 1),
+        "kelly_f": round(kelly_f, 4),
+        "fair_odds": fair_odds,
+        "overlay_pct": overlay_pct,
+    }
+
 
 def assess_value(model_prob, true_mkt_pct, sp, rating_pct, tj_a2e, min_rating, min_edge, min_tj_a2e):
-    mkt=true_mkt_pct/100
-    edge=model_prob-mkt
-    edge_pct=round(edge*100,1)
-    ev_unit=model_prob*(sp-1)-(1-model_prob)
-    gates={"edge":edge>(min_edge/100),"rating":rating_pct>=min_rating,"tj":tj_a2e>=min_tj_a2e,
-           "odds":st.session_state.min_odds<=sp<=st.session_state.max_odds}
-    bet=all(gates.values())
-    reasons=[]
+    mkt = true_mkt_pct / 100.0
+    edge = model_prob - mkt
+    edge_pct = round(edge * 100, 1)
+    ev_metrics = compute_ev_metrics(model_prob, sp)
+    ev_unit = ev_metrics["ev"]
+    overlay = ev_metrics["overlay_pct"]
+
+    gates = {
+        "edge":   edge > (min_edge / 100),
+        "rating": rating_pct >= min_rating,
+        "tj":     tj_a2e >= min_tj_a2e,
+        "odds":   st.session_state.min_odds <= sp <= st.session_state.max_odds,
+        "ev":     ev_unit > 0,   # NEW: must be +EV per dollar
+    }
+    bet = all(gates.values())
+    reasons = []
     if not gates["edge"]:   reasons.append(f"Edge {edge_pct}% < min {min_edge}%")
     if not gates["rating"]: reasons.append(f"Rating {rating_pct}% < min {min_rating}%")
     if not gates["tj"]:     reasons.append(f"J+T A2E {round(tj_a2e,2)} < min {min_tj_a2e}")
-    if not gates["odds"]:   reasons.append(f"SP ${sp} outside ${st.session_state.min_odds}–${st.session_state.max_odds}")
-    return {"bet":bet,"gates":gates,"edge_pct":edge_pct,"model_pct":round(model_prob*100,1),
-            "market_pct":round(mkt*100,1),"ev_unit":round(ev_unit,3),"ev_pct":round(ev_unit*100,1),"reasons":reasons}
+    if not gates["odds"]:   reasons.append(f"Price ${sp} outside ${st.session_state.min_odds}–${st.session_state.max_odds}")
+    if not gates["ev"]:     reasons.append(f"EV negative ({ev_metrics['ev_pct']:+.1f}%)")
+    return {
+        "bet": bet, "gates": gates,
+        "edge_pct": edge_pct,
+        "model_pct": round(model_prob * 100, 1),
+        "market_pct": round(mkt * 100, 1),
+        "ev_unit": round(ev_unit, 3),
+        "ev_pct": ev_metrics["ev_pct"],
+        "overlay_pct": overlay,
+        "kelly_f": ev_metrics["kelly_f"],
+        "fair_odds": ev_metrics["fair_odds"],
+        "reasons": reasons,
+    }
+
+
+def detect_angles(runner: dict, past: list, tempo_info: dict, secs: dict) -> list:
+    """
+    Returns a list of angle dicts: {"label", "detail", "strength": 1-3}
+    strength 3 = strong positive, 1 = mild
+    """
+    angles = []
+    hid = get_horse_id(runner)
+    name = get_runner_name(runner)
+    dist = safe_float(runner.get("distance") or runner.get("raceDistance") or 1200)
+
+    if not past:
+        return angles
+
+    last = past[0]
+    ls_pos = safe_float(last.get("finishingPosition", 99))
+    ls_early = safe_float(last.get("positionEarly") or last.get("firstPosition") or 0)
+    ls_comment = (last.get("raceComment") or last.get("comments") or "").lower()
+    ls_dist = safe_float(last.get("raceDistance") or 0)
+
+    # 1. PUNCTURE ANGLE — ran fast early, tired, racing back to soft tempo
+    if 0 < ls_early <= 3 and ls_pos >= 5:
+        tempo = tempo_info.get("tempo", "MODERATE")
+        if tempo in ("SOFT", "MODERATE"):
+            angles.append({
+                "label": "Puncture Bounce",
+                "detail": f"Led/pressed last start (pos {int(ls_early)}) but faded to {int(ls_pos)}. Today's {tempo.lower()} tempo suits — can roll forward unchallenged.",
+                "strength": 3,
+                "icon": "🔁"
+            })
+        else:
+            angles.append({
+                "label": "Puncture (Hot Pace Risk)",
+                "detail": f"Pressed last start and tired. Today's HOT tempo may repeat the pattern — watch sectionals.",
+                "strength": 1,
+                "icon": "⚠️"
+            })
+
+    # 2. UNLUCKY LAST START
+    trouble_found = []
+    for kw, _ in TROUBLE_KEYWORDS[:8]:
+        if kw in ls_comment:
+            trouble_found.append(kw)
+            break
+    if trouble_found and ls_pos >= 4:
+        angles.append({
+            "label": "Unlucky Last Start",
+            "detail": f"Comment mentions '{trouble_found[0]}' — finished {int(ls_pos)}{['st','nd','rd'][int(ls_pos)-1] if int(ls_pos)<=3 else 'th'}. Hidden merit warrants upgrade.",
+            "strength": 2,
+            "icon": "🍀"
+        })
+
+    # 3. DISTANCE DROP — stepping back from longer race
+    if ls_dist > 0 and dist < ls_dist * 0.88:
+        angles.append({
+            "label": "Distance Drop",
+            "detail": f"Steps back from {int(ls_dist)}m to {int(dist)}m — typically suits on-pace runners with tactical speed.",
+            "strength": 2,
+            "icon": "📏"
+        })
+
+    # 4. WEIGHT RELIEF
+    w_now = safe_float(runner.get("weightTotal") or runner.get("weightCarried") or 57)
+    w_last = safe_float(last.get("weightCarried") or 0)
+    if w_last > 0 and w_now < w_last - 1.5:
+        angles.append({
+            "label": "Weight Relief",
+            "detail": f"Carries {w_now}kg today vs {w_last}kg last start — {round(w_last-w_now,1)}kg lighter. Meaningful advantage at {int(dist)}m.",
+            "strength": 2 if (w_last - w_now) >= 3 else 1,
+            "icon": "⚖️"
+        })
+
+    # 5. FRESH HORSE — first-up after 60+ day spell with good record
+    s = str(last.get("raceDate") or last.get("date") or "")[:10]
+    try:
+        ld = datetime.strptime(s, "%Y-%m-%d").date()
+        days = (date.today() - ld).days
+        if days > 60:
+            tr = runner.get("trackRecord") or {}
+            # Check if trainer has a strong first-up record (approximate via career win%)
+            cw = safe_float(runner.get("winPct", 0))
+            if cw >= 20:
+                angles.append({
+                    "label": f"Fresh Runner ({days}d spell)",
+                    "detail": f"Off a {days}-day break. Career win% of {cw:.0f}% suggests horse returns fit — watch market drift for trainer confidence.",
+                    "strength": 2 if days < 120 else 1,
+                    "icon": "💤"
+                })
+        elif 14 <= days <= 21:
+            angles.append({
+                "label": "Peak Fitness Window",
+                "detail": f"Runs {days} days since last start — sits in the optimal 14–21 day fitness cycle.",
+                "strength": 1,
+                "icon": "✅"
+            })
+    except:
+        pass
+
+    # 6. SECTIONAL CLOSER — strong closing speed, suits hot pace
+    sec_d = secs.get(hid, {})
+    sec_rtg = safe_float(sec_d.get("sectionalRating") or sec_d.get("closing600Rating") or 0)
+    if sec_rtg > 80 and tempo_info.get("tempo") == "HOT":
+        angles.append({
+            "label": "Elite Closer in Hot Pace",
+            "detail": f"Sectional rating {sec_rtg:.0f} — top-tier closing speed. HOT tempo setup is ideal.",
+            "strength": 3,
+            "icon": "🚀"
+        })
+
+    return angles
 
 
 # ─── SPEEDMAP ────────────────────────────────────────────────────────────────
@@ -1509,19 +1784,22 @@ with TAB_ANALYSIS:
     else:
         header_right='<span class="pill pill-amber">SP only</span>'
 
-    st.markdown(f"""<div class="page-header">
-      <div>
-        <div class="page-eyebrow">{rtrk} · {rds}</div>
-        <div class="page-title">Race {rnum} — {rname}</div>
-        <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
-          <span class="pill pill-ink">{len(runners)} runners</span>
-          <span class="pill pill-muted">{rdist}m</span>
-          {'<span class="pill pill-muted">'+rcls+'</span>' if rcls else ''}
-          {'<span class="pill pill-muted">'+rcond+'</span>' if rcond else ''}
-        </div>
-      </div>
-      {header_right}
-    </div>""",unsafe_allow_html=True)
+    cls_pill = f'<span class="pill pill-muted">{rcls}</span>' if rcls else ''
+    cond_pill = f'<span class="pill pill-muted">{rcond}</span>' if rcond else ''
+    st.markdown(
+        f'<div class="page-header">'
+        f'<div>'
+        f'<div class="page-eyebrow">{rtrk} · {rds}</div>'
+        f'<div class="page-title">Race {rnum} — {rname}</div>'
+        f'<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">'
+        f'<span class="pill pill-ink">{len(runners)} runners</span>'
+        f'<span class="pill pill-muted">{rdist}m</span>'
+        f'{cls_pill}{cond_pill}'
+        f'</div>'
+        f'</div>'
+        f'{header_right}'
+        f'</div>',
+        unsafe_allow_html=True)
 
     # ── Controls bar ──
     col_rate, col_odds, col_space = st.columns([2, 2, 6])
@@ -1574,7 +1852,7 @@ with TAB_ANALYSIS:
     past_all=st.session_state.past_form_by_horse
     mkt=frame_market(runners)
     tempo_info=classify_tempo(runners)
-    field_probs=normalise_field(runners,ratings,pf_ratings) if ratings else {}
+    field_probs=normalise_field(runners,ratings,pf_ratings,past_all) if ratings else {}
 
     # ══ SPEEDMAP ══
     st.markdown('<div class="section-hdr">Speedmap & Pace Dynamics</div>',unsafe_allow_html=True)
@@ -1870,63 +2148,144 @@ with TAB_ANALYSIS:
                 elif price<=1:
                     st.markdown('<div class="alert alert-amber">No price available yet.</div>',unsafe_allow_html=True)
                 else:
+                    # ── Betting Angles ──
+                    angles = detect_angles(runner, past, tempo_info, secs)
+                    if angles:
+                        ang_html = '<div style="margin-bottom:16px"><div class="dl-label" style="margin-bottom:8px">Betting Angles</div>'
+                        for ang in angles:
+                            s = ang["strength"]
+                            bg = "var(--go-l)" if s==3 else "var(--warn-l)" if s==2 else "var(--ghost)"
+                            bd = "var(--go-m)" if s==3 else "var(--warn-m)" if s==2 else "var(--silver)"
+                            tc = "var(--go)" if s==3 else "var(--warn)" if s==2 else "var(--steel)"
+                            stars = "★"*s + "☆"*(3-s)
+                            ang_html += (
+                                f'<div style="background:{bg};border:1px solid {bd};border-radius:var(--r);padding:10px 12px;margin-bottom:6px">'
+                                f'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">'
+                                f'<span style="font-size:.76rem;font-weight:700;color:{tc}">{ang["icon"]} {ang["label"]}</span>'
+                                f'<span style="font-family:\'DM Mono\',monospace;font-size:.66rem;color:{tc}">{stars}</span>'
+                                f'</div>'
+                                f'<div style="font-size:.76rem;color:var(--ink-3);line-height:1.55">{ang["detail"]}</div>'
+                                f'</div>'
+                            )
+                        ang_html += '</div>'
+                        st.markdown(ang_html, unsafe_allow_html=True)
+
+                    # ── Probability & EV breakdown ──
                     if mf and mp:
                         tp=mf["true_pct"]; rp=mf["raw_pct"]; fair=mf["fair_odds"]; mp_p=round(mp*100,1)
                         diff=round(mp_p-tp,1); dc="var(--go)" if diff>0 else "var(--stop)"
                         src_badge=f'<span class="mkt-badge badge-live" style="font-size:.6rem">{"LIVE" if mf.get("source")=="live" else "SP"}</span>'
+                        ev_m = compute_ev_metrics(mp, price)
+                        ev_c_inner = "var(--go)" if ev_m["ev"]>0 else "var(--stop)"
+                        overlay_c = "var(--go)" if ev_m["overlay_pct"]>0 else "var(--stop)"
                         st.markdown(
                             f'<div class="card" style="margin-bottom:16px">'
-                            f'<div class="dl-label" style="margin-bottom:16px;font-weight:700">Probability Breakdown {src_badge}</div>'
+                            f'<div class="dl-label" style="margin-bottom:14px;font-weight:700">Probability & EV {src_badge}</div>'
                             f'<div class="prob-grid">'
-                            f'<div class="prob-cell-blue"><div class="dl-label">Price</div><div class="dl-value c-blue" style="font-size:1.2rem">${price:.2f}</div></div>'
-                            f'<div class="prob-cell-blue"><div class="dl-label">Fair Odds</div><div class="dl-value" style="font-size:1.2rem">${fair:.2f}</div></div>'
-                            f'<div class="prob-cell"><div class="dl-label">Raw Mkt%</div><div class="dl-value" style="font-size:.95rem;color:var(--steel)">{rp}%</div></div>'
+                            f'<div class="prob-cell-blue"><div class="dl-label">Market Price</div><div class="dl-value c-blue" style="font-size:1.2rem">${price:.2f}</div></div>'
+                            f'<div class="prob-cell-blue"><div class="dl-label">Fair Odds</div><div class="dl-value" style="font-size:1.2rem">${ev_m["fair_odds"]:.2f}</div></div>'
                             f'<div class="prob-cell"><div class="dl-label">True Mkt%</div><div class="dl-value" style="font-size:.95rem">{tp}%</div></div>'
                             f'<div class="prob-cell-blue"><div class="dl-label">Model%</div><div class="dl-value c-blue" style="font-size:.95rem;font-weight:700">{mp_p}%</div></div>'
                             f'<div class="prob-cell-blue"><div class="dl-label">Edge</div><div style="font-family:\'DM Mono\',monospace;font-size:.95rem;font-weight:700;color:{dc}">{"+" if diff>=0 else ""}{diff}%</div></div>'
+                            f'<div class="prob-cell-blue"><div class="dl-label">Overlay</div><div style="font-family:\'DM Mono\',monospace;font-size:.95rem;font-weight:700;color:{overlay_c}">{ev_m["overlay_pct"]:+.1f}%</div></div>'
                             f'</div>'
-                            f'<div style="margin-top:12px;font-size:.68rem;color:var(--mist)">Book: {mf["overround"]}%  ·  EV/unit: {verdict["ev_pct"] if verdict else "—"}%</div>'
-                            f'</div>', unsafe_allow_html=True)
+                            f'<div style="margin-top:12px;display:flex;gap:16px;flex-wrap:wrap">'
+                            f'<div><div class="dl-label">EV per $1</div><div style="font-family:\'DM Mono\',monospace;font-size:1rem;font-weight:700;color:{ev_c_inner}">{ev_m["ev_pct"]:+.1f}¢</div></div>'
+                            f'<div><div class="dl-label">Kelly%</div><div style="font-family:\'DM Mono\',monospace;font-size:1rem;font-weight:700">{round(ev_m["kelly_f"]*100,1)}%</div></div>'
+                            f'<div><div class="dl-label">Book</div><div style="font-family:\'DM Mono\',monospace;font-size:1rem">{mf["overround"]}%</div></div>'
+                            f'</div></div>', unsafe_allow_html=True)
+
+                    # ── Model reasoning ──
+                    reason = st.session_state.get("_model_reasoning", {}).get(hid)
+                    if reason:
+                        r_parts = []
+                        if reason.get("pf_signal"):
+                            r_parts.append(f'PF AI implied {round(reason["pf_signal"]*100,1)}%')
+                        r_parts.append(f'Rating {round(reason["rat_signal"]*100,1)}%')
+                        if reason.get("career_win",0)>0:
+                            r_parts.append(f'Career win {round(reason["career_win"]*100,1)}%')
+                        if reason.get("tj_a2e",0)>0 and reason.get("tj_runs",0)>=15:
+                            r_parts.append(f'J+T A2E {reason["tj_a2e"]:.2f} ({reason["tj_runs"]} runs)')
+                        adjustments = []
+                        if reason.get("days_penalty",0)!=0:
+                            dp = reason["days_penalty"]
+                            adjustments.append((f'Fitness {"+" if dp>0 else ""}{round(dp*100,1)}%', dp>0))
+                        if reason.get("puncture_boost",0)>0:
+                            adjustments.append((f'Puncture bounce +{round(reason["puncture_boost"]*100,1)}%', True))
+                        if reason.get("weight_penalty",0)<0:
+                            adjustments.append((f'Weight penalty {round(reason["weight_penalty"]*100,1)}%', False))
+                        reason_html = (
+                            '<div class="card-sm" style="margin-bottom:16px">'
+                            '<div class="dl-label" style="margin-bottom:8px">Model Inputs</div>'
+                            '<div style="font-size:.75rem;color:var(--steel);line-height:1.8">'
+                        )
+                        for p in r_parts:
+                            reason_html += f'<div>· {p}</div>'
+                        if adjustments:
+                            reason_html += '<div style="margin-top:5px;padding-top:5px;border-top:1px solid var(--silver)">'
+                            for (a_txt, positive) in adjustments:
+                                col = "var(--go)" if positive else "var(--stop)"
+                                reason_html += f'<div style="color:{col}">▸ {a_txt}</div>'
+                            reason_html += '</div>'
+                        reason_html += (
+                            f'<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--silver);'
+                            f'color:var(--mist)">Raw: {reason.get("final_raw",0):.4f} → softmax normalised</div>'
+                            f'</div></div>'
+                        )
+                        st.markdown(reason_html, unsafe_allow_html=True)
 
                     if verdict:
                         g=verdict["gates"]
                         def gp(ok): return ("pill-green","Pass") if ok else ("pill-red","Fail")
-                        g1c,g1t=gp(g["edge"]); g2c,g2t=gp(g["rating"]); g3c,g3t=gp(g["tj"]); g4c,g4t=gp(g["odds"])
+                        g1c,g1t=gp(g["edge"]); g2c,g2t=gp(g["rating"]); g3c,g3t=gp(g["tj"])
+                        g4c,g4t=gp(g["odds"]); g5c,g5t=gp(g.get("ev",False))
                         gate_detail={
                             "edge":f"Edge {'+' if verdict['edge_pct']>=0 else ''}{verdict['edge_pct']}% vs min {st.session_state.min_edge}%",
                             "rating":f"Rating {rating['pct'] if rating else '?'}% vs min {st.session_state.min_rating}%",
                             "tj":f"A2E {tj_a2e:.2f} vs min {st.session_state.min_tj_a2e}",
-                            "odds":f"${price:.2f}  range ${st.session_state.min_odds}–${st.session_state.max_odds}"}
+                            "odds":f"${price:.2f}  range ${st.session_state.min_odds}–${st.session_state.max_odds}",
+                            "ev":f"EV {verdict['ev_pct']:+.1f}¢ per $1 staked",
+                        }
                         st.markdown(
                             f'<div class="card" style="margin-bottom:16px">'
-                            f'<div class="dl-label" style="margin-bottom:14px;font-weight:700">Value Gates</div>'
-                            +"".join([f'<div class="gate-row"><span class="pill {pc}" style="width:44px;justify-content:center;flex-shrink:0;font-size:.6rem">{pt}</span>'
-                                      f'<span class="gate-lbl">{lbl}</span><span class="gate-detail">{gate_detail[gk]}</span></div>'
-                                      for gk,(pc,pt),lbl in [("edge",(g1c,g1t),"Edge"),("rating",(g2c,g2t),"Rating"),
-                                                             ("tj",(g3c,g3t),"J+T A2E"),("odds",(g4c,g4t),"Odds range")]])
+                            f'<div class="dl-label" style="margin-bottom:14px;font-weight:700">Value Gates (5)</div>'
+                            +"".join([
+                                f'<div class="gate-row"><span class="pill {pc}" style="width:44px;justify-content:center;flex-shrink:0;font-size:.6rem">{pt}</span>'
+                                f'<span class="gate-lbl">{lbl}</span><span class="gate-detail">{gate_detail[gk]}</span></div>'
+                                for gk,(pc,pt),lbl in [
+                                    ("edge",(g1c,g1t),"Edge"),
+                                    ("rating",(g2c,g2t),"Rating"),
+                                    ("tj",(g3c,g3t),"J+T A2E"),
+                                    ("odds",(g4c,g4t),"Odds range"),
+                                    ("ev",(g5c,g5t),"+EV"),
+                                ]
+                            ])
                             +f'</div>', unsafe_allow_html=True)
 
                         if verdict["bet"]:
                             rec=compute_stake(st.session_state.bank,mp,price,st.session_state.staking_method,
                                 st.session_state.kelly_fraction,st.session_state.flat_pct,
                                 st.session_state.level_stake,st.session_state.max_stake_pct)
-                            ev_c="#4ade80" if rec["ev"]>=0 else "#f87171"
+                            ev_c2="#4ade80" if rec["ev"]>=0 else "#f87171"
                             st.markdown(
                                 f'<div class="stake-card">'
                                 f'<div class="stake-lbl">{st.session_state.staking_method}</div>'
                                 f'<div class="stake-amount">${rec["stake"]:.2f}</div>'
-                                f'<div class="stake-detail" style="color:{ev_c}">EV ${rec["ev"]:+.2f}  ·  {rec["ev_pct"]:+.1f}%  ·  {rec["pct_bank"]}% of bank</div>'
-                                f'<div class="stake-detail">Break-even: {rec["roi_required"]:.1f}% ROI required</div>'
+                                f'<div class="stake-detail" style="color:{ev_c2}">EV ${rec["ev"]:+.2f}  ·  {rec["ev_pct"]:+.1f}%  ·  {rec["pct_bank"]}% of bank</div>'
+                                f'<div class="stake-detail">Break-even: {rec["roi_required"]:.1f}% ROI  ·  Kelly f* = {round(verdict["kelly_f"]*100,2)}%</div>'
                                 f'</div>', unsafe_allow_html=True)
+                            top_angle = max(angles, key=lambda a: a["strength"]) if angles else None
+                            banner_sub = top_angle["label"] + " — " + top_angle["detail"][:80] + "…" if top_angle else "Positive edge versus de-vigged market probability"
                             st.markdown(
-                                '<div class="bet-banner"><div class="bet-banner-title">★ BET — All four gates pass</div>'
-                                '<div class="bet-banner-sub">Positive edge versus de-vigged market probability</div></div>',
+                                f'<div class="bet-banner"><div class="bet-banner-title">★ BET — All five gates pass</div>'
+                                f'<div class="bet-banner-sub">{banner_sub}</div></div>',
                                 unsafe_allow_html=True)
                             if st.button(f"📋  Log — {name}",key=f"log_{hid}_{rank}"):
                                 add_bet(name,f"{rtrk} R{rnum}",rec["stake"],price,verdict["edge_pct"],verdict["model_pct"])
                                 st.success(f"✓ Logged: {name} ${rec['stake']:.2f} @ ${price}")
                         else:
                             st.markdown(f'<div class="alert alert-red">No bet — {"  ·  ".join(verdict["reasons"])}</div>',unsafe_allow_html=True)
+
 
 
 # ════════════════════════════════════════════════════════════════
