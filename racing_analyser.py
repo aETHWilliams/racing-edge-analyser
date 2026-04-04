@@ -1,5 +1,6 @@
 """
 Racing Edge Analyser — PuntingForm API v2
+Live odds scraped from TAB.com.au (public, no auth required)
 pip install streamlit requests pandas numpy plotly
 streamlit run racing_analyser.py
 """
@@ -12,6 +13,8 @@ import plotly.graph_objects as go
 from datetime import datetime, date
 from typing import Optional, Dict, List
 import json
+import re
+import time
 
 # ─── PAGE CONFIG ─────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -21,157 +24,411 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ─── CSS ─────────────────────────────────────────────────────────────────────
+# ─── PREMIUM CSS ─────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=DM+Mono:wght@300;400;500&family=Playfair+Display:wght@700;800&display=swap');
+
 :root {
-  --bg:#f8fafc;--bg2:#f1f5f9;--surface:#ffffff;--surface2:#f8fafc;
-  --border:#e2e8f0;--border2:#cbd5e1;
-  --blue:#1d4ed8;--blue-dark:#1e3a8a;--blue-mid:#3b82f6;
-  --blue-l:#dbeafe;--blue-ll:#eff6ff;--blue-m:#bfdbfe;
-  --teal:#0891b2;--teal-l:#cffafe;
-  --text:#0f172a;--text2:#1e293b;--text3:#475569;--text4:#94a3b8;
-  --green:#16a34a;--green-l:#dcfce7;--green-m:#86efac;
-  --red:#dc2626;--red-l:#fee2e2;--red-m:#fca5a5;
-  --amber:#d97706;--amber-l:#fef3c7;--amber-m:#fcd34d;
-  --purple:#7c3aed;--purple-l:#ede9fe;
-  --r:6px;--r2:10px;--r3:14px;--r4:20px;
-  --sh:0 1px 3px rgba(15,23,42,.06),0 1px 2px rgba(15,23,42,.04);
-  --sh2:0 4px 16px rgba(15,23,42,.08),0 2px 8px rgba(15,23,42,.04);
-  --sh3:0 8px 32px rgba(29,78,216,.12),0 2px 8px rgba(29,78,216,.06);
+  /* Core palette — deep navy / brass / cream */
+  --ink:#0d0f14;
+  --ink-2:#1a1e2a;
+  --ink-3:#252b3b;
+  --slate:#3a4256;
+  --steel:#5a6480;
+  --mist:#8b95aa;
+  --fog:#b8bfcc;
+  --silver:#d6dae3;
+  --ghost:#eef0f5;
+  --snow:#f7f8fb;
+  --white:#ffffff;
+
+  /* Accent — brass / gold */
+  --brass:#c9a44a;
+  --brass-l:#e8d49a;
+  --brass-ll:#fdf6e3;
+  --brass-dark:#8c6f2a;
+
+  /* Accent — sapphire */
+  --sap:#2255cc;
+  --sap-mid:#3b6fe0;
+  --sap-l:#d0dcf8;
+  --sap-ll:#eef2fd;
+
+  /* Semantic */
+  --go:#1a8c4e;
+  --go-l:#d4f0e2;
+  --go-m:#6dd49a;
+  --stop:#c0392b;
+  --stop-l:#fde8e6;
+  --stop-m:#f0938a;
+  --warn:#b06a00;
+  --warn-l:#fef3d6;
+  --warn-m:#f5c96b;
+  --info:#1a6ea8;
+  --info-l:#d6ecf8;
+
+  --r:5px;--r2:9px;--r3:14px;--r4:22px;
+  --sh:0 1px 4px rgba(13,15,20,.07),0 1px 2px rgba(13,15,20,.05);
+  --sh2:0 4px 20px rgba(13,15,20,.1),0 1px 6px rgba(13,15,20,.06);
+  --sh3:0 8px 40px rgba(34,85,204,.15),0 2px 10px rgba(34,85,204,.08);
 }
-html,body{font-family:'Inter',sans-serif;}
-[data-testid="stAppViewContainer"]{background:var(--bg)!important;color:var(--text);font-family:'Inter',sans-serif;font-size:14px;}
+
+html,body,[data-testid="stAppViewContainer"]{
+  font-family:'DM Sans',sans-serif!important;
+  background:var(--snow)!important;
+  color:var(--ink)!important;
+  font-size:14px;
+}
+
+/* ── SIDEBAR ── */
 [data-testid="stHeader"]{background:transparent!important;}
-[data-testid="stSidebar"]{background:#0f172a!important;border-right:1px solid #1e293b!important;}
+[data-testid="stSidebar"]{
+  background:var(--ink-2)!important;
+  border-right:1px solid var(--ink-3)!important;
+}
 [data-testid="stSidebar"]>div{padding-top:0!important;}
-[data-testid="stSidebar"] .stMarkdown p,
+
 [data-testid="stSidebar"] label,
 [data-testid="stSidebar"] .stSelectbox label,
 [data-testid="stSidebar"] .stSlider label,
 [data-testid="stSidebar"] .stNumberInput label,
 [data-testid="stSidebar"] .stTextInput label,
-[data-testid="stSidebar"] .stDateInput label{color:#94a3b8!important;font-size:.78rem!important;font-weight:500!important;letter-spacing:.03em;}
-[data-testid="stSidebar"] input,[data-testid="stSidebar"] select{background:#1e293b!important;border:1px solid #334155!important;border-radius:var(--r)!important;color:#f1f5f9!important;}
-[data-testid="stSidebar"] [data-baseweb="select"]>div{background:#1e293b!important;border:1px solid #334155!important;}
-[data-testid="stSidebar"] [data-baseweb="select"]*{color:#f1f5f9!important;}
+[data-testid="stSidebar"] .stDateInput label{
+  color:var(--fog)!important;font-size:.72rem!important;
+  font-weight:500!important;letter-spacing:.04em!important;
+  text-transform:uppercase!important;
+}
+[data-testid="stSidebar"] input,
+[data-testid="stSidebar"] select{
+  background:var(--ink-3)!important;
+  border:1px solid var(--slate)!important;
+  border-radius:var(--r)!important;
+  color:var(--silver)!important;
+  font-family:'DM Mono',monospace!important;
+}
+[data-testid="stSidebar"] [data-baseweb="select"]>div{
+  background:var(--ink-3)!important;
+  border:1px solid var(--slate)!important;
+}
+[data-testid="stSidebar"] [data-baseweb="select"]*{color:var(--silver)!important;}
 [data-testid="stSidebar"] [data-testid="stAlert"]{display:none;}
-.stTextInput input,.stNumberInput input,.stTextArea textarea{background:var(--surface)!important;border:1px solid var(--border)!important;border-radius:var(--r)!important;color:var(--text)!important;font-family:'JetBrains Mono',monospace!important;font-size:.82rem!important;}
-.stTabs [data-baseweb="tab-list"]{background:var(--surface)!important;border-bottom:2px solid var(--border)!important;gap:0!important;padding:0!important;box-shadow:var(--sh);}
-.stTabs [data-baseweb="tab"]{background:transparent!important;color:var(--text3)!important;font-family:'Inter',sans-serif!important;font-size:.82rem!important;font-weight:500!important;padding:16px 24px!important;border:none!important;border-bottom:2px solid transparent!important;margin-bottom:-2px!important;}
-.stTabs [aria-selected="true"]{color:var(--blue)!important;border-bottom:2px solid var(--blue)!important;font-weight:700!important;}
-.stTabs [data-testid="stTabPanel"]{background:var(--bg)!important;padding-top:28px!important;}
-.stButton>button{background:var(--blue)!important;color:#fff!important;border:none!important;border-radius:var(--r2)!important;font-family:'Inter',sans-serif!important;font-weight:600!important;font-size:.8rem!important;padding:.55rem 1.25rem!important;box-shadow:0 2px 8px rgba(29,78,216,.25)!important;transition:all .15s ease!important;}
-.stButton>button:hover{background:var(--blue-dark)!important;transform:translateY(-1px)!important;}
-[data-testid="stSidebar"] .stButton>button{background:linear-gradient(135deg,#1d4ed8,#3b82f6)!important;width:100%!important;padding:.65rem!important;}
-[data-testid="stDataFrame"]{border:1px solid var(--border)!important;border-radius:var(--r2)!important;overflow:hidden!important;box-shadow:var(--sh)!important;}
-[data-testid="stDataFrame"] th{background:#f8fafc!important;color:var(--blue-dark)!important;font-family:'Inter',sans-serif!important;font-size:.68rem!important;font-weight:700!important;letter-spacing:.08em!important;text-transform:uppercase!important;border-bottom:2px solid var(--border)!important;padding:11px 14px!important;}
-[data-testid="stDataFrame"] td{color:var(--text)!important;border-bottom:1px solid var(--border)!important;font-family:'JetBrains Mono',monospace!important;font-size:.78rem!important;padding:9px 14px!important;}
-[data-testid="stDataFrame"] tr:hover td{background:var(--blue-ll)!important;}
-.streamlit-expanderHeader{background:var(--surface)!important;border:1px solid var(--border)!important;border-radius:var(--r2)!important;color:var(--text)!important;font-family:'Inter',sans-serif!important;font-size:.85rem!important;font-weight:600!important;box-shadow:var(--sh)!important;padding:14px 18px!important;}
-.streamlit-expanderContent{background:var(--surface)!important;border:1px solid var(--border)!important;border-top:none!important;border-radius:0 0 var(--r2) var(--r2)!important;padding:16px!important;}
+
+/* ── INPUTS ── */
+.stTextInput input,.stNumberInput input,.stTextArea textarea{
+  background:var(--white)!important;
+  border:1px solid var(--silver)!important;
+  border-radius:var(--r)!important;
+  color:var(--ink)!important;
+  font-family:'DM Mono',monospace!important;
+  font-size:.82rem!important;
+  transition:border .15s;
+}
+.stTextInput input:focus,.stNumberInput input:focus{
+  border-color:var(--sap)!important;
+  box-shadow:0 0 0 3px rgba(34,85,204,.1)!important;
+}
+
+/* ── TABS ── */
+.stTabs [data-baseweb="tab-list"]{
+  background:var(--white)!important;
+  border-bottom:2px solid var(--silver)!important;
+  gap:0!important;padding:0!important;
+  box-shadow:var(--sh);
+}
+.stTabs [data-baseweb="tab"]{
+  background:transparent!important;
+  color:var(--steel)!important;
+  font-family:'DM Sans',sans-serif!important;
+  font-size:.82rem!important;font-weight:500!important;
+  padding:15px 22px!important;
+  border:none!important;border-bottom:2px solid transparent!important;
+  margin-bottom:-2px!important;letter-spacing:.02em;
+}
+.stTabs [aria-selected="true"]{
+  color:var(--ink)!important;
+  border-bottom:2px solid var(--brass)!important;
+  font-weight:700!important;
+}
+.stTabs [data-testid="stTabPanel"]{
+  background:var(--snow)!important;padding-top:28px!important;
+}
+
+/* ── BUTTONS ── */
+.stButton>button{
+  background:var(--ink)!important;color:var(--white)!important;
+  border:none!important;border-radius:var(--r2)!important;
+  font-family:'DM Sans',sans-serif!important;
+  font-weight:600!important;font-size:.8rem!important;
+  padding:.55rem 1.25rem!important;letter-spacing:.02em;
+  box-shadow:0 2px 8px rgba(13,15,20,.25)!important;
+  transition:all .18s ease!important;
+}
+.stButton>button:hover{
+  background:var(--ink-3)!important;
+  transform:translateY(-1px)!important;
+  box-shadow:0 4px 16px rgba(13,15,20,.3)!important;
+}
+[data-testid="stSidebar"] .stButton>button{
+  background:linear-gradient(135deg,var(--brass-dark),var(--brass))!important;
+  color:var(--ink)!important;width:100%!important;padding:.65rem!important;
+  font-weight:700!important;
+}
+[data-testid="stSidebar"] .stButton>button:hover{
+  filter:brightness(1.08)!important;
+}
+
+/* ── DATAFRAME ── */
+[data-testid="stDataFrame"]{
+  border:1px solid var(--silver)!important;
+  border-radius:var(--r2)!important;overflow:hidden!important;
+  box-shadow:var(--sh)!important;
+}
+[data-testid="stDataFrame"] th{
+  background:var(--ghost)!important;color:var(--slate)!important;
+  font-family:'DM Sans',sans-serif!important;
+  font-size:.65rem!important;font-weight:700!important;
+  letter-spacing:.1em!important;text-transform:uppercase!important;
+  border-bottom:2px solid var(--silver)!important;padding:11px 14px!important;
+}
+[data-testid="stDataFrame"] td{
+  color:var(--ink)!important;border-bottom:1px solid var(--ghost)!important;
+  font-family:'DM Mono',monospace!important;font-size:.77rem!important;
+  padding:9px 14px!important;
+}
+[data-testid="stDataFrame"] tr:hover td{background:var(--sap-ll)!important;}
+
+/* ── EXPANDERS ── */
+.streamlit-expanderHeader{
+  background:var(--white)!important;border:1px solid var(--silver)!important;
+  border-radius:var(--r2)!important;color:var(--ink)!important;
+  font-family:'DM Sans',sans-serif!important;font-size:.86rem!important;
+  font-weight:600!important;box-shadow:var(--sh)!important;
+  padding:14px 18px!important;transition:background .15s;
+}
+.streamlit-expanderHeader:hover{background:var(--ghost)!important;}
+.streamlit-expanderContent{
+  background:var(--white)!important;border:1px solid var(--silver)!important;
+  border-top:none!important;border-radius:0 0 var(--r2) var(--r2)!important;
+  padding:20px!important;
+}
 [data-testid="stAlert"]{border-radius:var(--r2)!important;font-size:.82rem!important;}
-.page-hdr{display:flex;align-items:flex-end;justify-content:space-between;border-bottom:2px solid var(--border);padding-bottom:16px;margin-bottom:28px;}
-.page-title{font-size:1.5rem;font-weight:800;color:var(--text);letter-spacing:-.03em;line-height:1;}
-.page-sub{font-family:'JetBrains Mono',monospace;font-size:.68rem;color:var(--text4);letter-spacing:.06em;text-transform:uppercase;margin-top:6px;}
-.sb-brand{background:linear-gradient(160deg,#0f172a 0%,#1e3a8a 100%);margin:-1rem -1rem 0;padding:24px 20px 20px;border-bottom:1px solid #1d4ed8;}
-.sb-logo{font-size:1.25rem;font-weight:800;color:#fff;letter-spacing:-.03em;display:flex;align-items:center;gap:8px;}
-.sb-sub{font-family:'JetBrains Mono',monospace;font-size:.58rem;color:rgba(255,255,255,.45);letter-spacing:.14em;margin-top:4px;text-transform:uppercase;}
-.sb-version{display:inline-block;margin-top:8px;padding:2px 8px;background:rgba(59,130,246,.25);border:1px solid rgba(59,130,246,.4);border-radius:99px;font-family:'JetBrains Mono',monospace;font-size:.58rem;color:#93c5fd;letter-spacing:.08em;}
-.sb-sec{font-size:.65rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#475569;margin:20px 0 10px;padding-top:16px;border-top:1px solid #1e293b;}
-.sb-sec:first-of-type{border-top:none;margin-top:16px;}
-.sb-status-ok{font-size:.72rem;color:#4ade80;font-family:'JetBrains Mono',monospace;display:flex;align-items:center;gap:5px;margin-top:4px;}
-.sb-status-ok::before{content:'●';font-size:.6rem;}
-.sb-status-err{font-size:.72rem;color:#f87171;font-family:'JetBrains Mono',monospace;display:flex;align-items:center;gap:5px;margin-top:4px;}
-.sb-status-err::before{content:'●';font-size:.6rem;}
-.metric-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:24px;}
-.metric-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:16px 18px;box-shadow:var(--sh);position:relative;overflow:hidden;}
-.metric-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--border);}
-.metric-card.blue::before{background:var(--blue);}
-.metric-card.green::before{background:var(--green);}
-.metric-card.red::before{background:var(--red);}
-.metric-card.amber::before{background:var(--amber);}
-.metric-label{font-size:.65rem;font-weight:700;color:var(--text4);letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px;}
-.metric-value{font-family:'JetBrains Mono',monospace;font-size:1.5rem;font-weight:700;color:var(--text);line-height:1.1;}
-.metric-value.blue{color:var(--blue);}
-.metric-value.green{color:var(--green);}
-.metric-value.red{color:var(--red);}
-.metric-value.amber{color:var(--amber);}
-.metric-sub{font-family:'JetBrains Mono',monospace;font-size:.65rem;color:var(--text4);margin-top:4px;}
-.pill{display:inline-flex;align-items:center;padding:2px 9px;border-radius:99px;font-size:.65rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;line-height:1.8;}
-.pill-blue{background:var(--blue-l);color:var(--blue);border:1px solid var(--blue-m);}
-.pill-green{background:var(--green-l);color:var(--green);border:1px solid var(--green-m);}
-.pill-red{background:var(--red-l);color:var(--red);border:1px solid var(--red-m);}
-.pill-amber{background:var(--amber-l);color:var(--amber);border:1px solid var(--amber-m);}
-.pill-muted{background:var(--surface2);color:var(--text3);border:1px solid var(--border);}
-.pill-teal{background:var(--teal-l);color:var(--teal);border:1px solid #67e8f9;}
-.pill-dark{background:#0f172a;color:#e2e8f0;border:1px solid #334155;}
-.alert{border-radius:var(--r2);padding:12px 16px;font-size:.82rem;margin:8px 0;line-height:1.6;}
-.alert-blue{background:var(--blue-ll);border-left:3px solid var(--blue);color:var(--blue-dark);}
-.alert-green{background:var(--green-l);border-left:3px solid var(--green);color:#14532d;}
-.alert-red{background:var(--red-l);border-left:3px solid var(--red);color:#7f1d1d;}
-.alert-amber{background:var(--amber-l);border-left:3px solid var(--amber);color:#78350f;}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:20px 22px;box-shadow:var(--sh);margin-bottom:12px;}
-.card-sm{background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);padding:10px 13px;margin-bottom:6px;}
-.card-blue{background:var(--blue-ll);border:1px solid var(--blue-m);border-radius:var(--r2);padding:14px 18px;margin-bottom:12px;}
-.card-green{background:var(--green-l);border:1px solid var(--green-m);border-radius:var(--r2);padding:14px 18px;margin-bottom:12px;}
-.card-dark{background:#0f172a;border:1px solid #1e293b;border-radius:var(--r2);padding:16px 18px;margin-bottom:12px;}
+
+/* ── CUSTOM COMPONENTS ── */
+.brand-header{
+  background:linear-gradient(160deg,var(--ink) 0%,var(--ink-3) 100%);
+  margin:-1rem -1rem 0;padding:24px 20px 22px;
+  border-bottom:1px solid rgba(201,164,74,.3);
+}
+.brand-logo{
+  font-family:'Playfair Display',serif;font-size:1.3rem;font-weight:800;
+  color:var(--white);letter-spacing:-.01em;display:flex;align-items:center;gap:10px;
+}
+.brand-sub{
+  font-family:'DM Mono',monospace;font-size:.58rem;color:rgba(255,255,255,.4);
+  letter-spacing:.16em;margin-top:5px;text-transform:uppercase;
+}
+.brand-version{
+  display:inline-block;margin-top:10px;padding:2px 10px;
+  background:rgba(201,164,74,.2);border:1px solid rgba(201,164,74,.4);
+  border-radius:99px;font-family:'DM Mono',monospace;
+  font-size:.58rem;color:var(--brass-l);letter-spacing:.08em;
+}
+.sb-section{
+  font-size:.62rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--slate);margin:22px 0 10px;padding-top:18px;
+  border-top:1px solid var(--ink-3);
+}
+.sb-section:first-of-type{border-top:none;margin-top:18px;}
+.status-ok{
+  font-size:.72rem;color:#4ade80;font-family:'DM Mono',monospace;
+  display:flex;align-items:center;gap:6px;margin-top:5px;
+}
+.status-ok::before{content:'●';font-size:.5rem;animation:pulse 2s infinite;}
+.status-err{
+  font-size:.72rem;color:#f87171;font-family:'DM Mono',monospace;
+  display:flex;align-items:center;gap:6px;margin-top:5px;
+}
+.status-err::before{content:'●';font-size:.5rem;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+.page-header{
+  display:flex;align-items:flex-end;justify-content:space-between;
+  border-bottom:2px solid var(--silver);padding-bottom:18px;margin-bottom:32px;
+}
+.page-title{
+  font-family:'Playfair Display',serif;font-size:1.7rem;font-weight:700;
+  color:var(--ink);letter-spacing:-.02em;line-height:1;
+}
+.page-eyebrow{
+  font-family:'DM Mono',monospace;font-size:.62rem;color:var(--mist);
+  letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px;
+}
+
+.metric-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(145px,1fr));gap:14px;margin-bottom:28px;}
+.metric-card{
+  background:var(--white);border:1px solid var(--silver);
+  border-radius:var(--r2);padding:18px 20px;box-shadow:var(--sh);
+  position:relative;overflow:hidden;
+}
+.metric-card::after{
+  content:'';position:absolute;bottom:0;left:0;right:0;height:3px;
+  background:var(--silver);
+}
+.metric-card.c-blue::after{background:var(--sap);}
+.metric-card.c-green::after{background:var(--go);}
+.metric-card.c-red::after{background:var(--stop);}
+.metric-card.c-brass::after{background:var(--brass);}
+.metric-lbl{font-size:.62rem;font-weight:700;color:var(--mist);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px;}
+.metric-val{font-family:'DM Mono',monospace;font-size:1.55rem;font-weight:700;color:var(--ink);line-height:1;}
+.metric-val.c-blue{color:var(--sap);}
+.metric-val.c-green{color:var(--go);}
+.metric-val.c-red{color:var(--stop);}
+.metric-val.c-brass{color:var(--brass-dark);}
+.metric-sub{font-family:'DM Mono',monospace;font-size:.65rem;color:var(--mist);margin-top:5px;}
+
+.pill{display:inline-flex;align-items:center;padding:2px 10px;border-radius:99px;font-size:.63rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;line-height:1.9;}
+.pill-ink{background:var(--ink);color:var(--silver);}
+.pill-blue{background:var(--sap-ll);color:var(--sap);border:1px solid var(--sap-l);}
+.pill-green{background:var(--go-l);color:var(--go);border:1px solid var(--go-m);}
+.pill-red{background:var(--stop-l);color:var(--stop);border:1px solid var(--stop-m);}
+.pill-amber{background:var(--warn-l);color:var(--warn);border:1px solid var(--warn-m);}
+.pill-muted{background:var(--ghost);color:var(--steel);border:1px solid var(--silver);}
+.pill-brass{background:var(--brass-ll);color:var(--brass-dark);border:1px solid var(--brass-l);}
+
+.alert{border-radius:var(--r2);padding:12px 16px;font-size:.82rem;margin:8px 0;line-height:1.65;}
+.alert-blue{background:var(--info-l);border-left:3px solid var(--info);color:var(--info);}
+.alert-green{background:var(--go-l);border-left:3px solid var(--go);color:var(--go);}
+.alert-red{background:var(--stop-l);border-left:3px solid var(--stop);color:var(--stop);}
+.alert-amber{background:var(--warn-l);border-left:3px solid var(--warn);color:var(--warn);}
+.alert-brass{background:var(--brass-ll);border-left:3px solid var(--brass);color:var(--brass-dark);}
+
+.card{background:var(--white);border:1px solid var(--silver);border-radius:var(--r2);padding:22px 24px;box-shadow:var(--sh);margin-bottom:14px;}
+.card-sm{background:var(--ghost);border:1px solid var(--silver);border-radius:var(--r);padding:10px 14px;margin-bottom:7px;}
+.card-blue{background:var(--sap-ll);border:1px solid var(--sap-l);border-radius:var(--r2);padding:16px 20px;margin-bottom:14px;}
+.card-green{background:var(--go-l);border:1px solid var(--go-m);border-radius:var(--r2);padding:16px 20px;margin-bottom:14px;}
+.card-brass{background:var(--brass-ll);border:1px solid var(--brass-l);border-radius:var(--r2);padding:16px 20px;margin-bottom:14px;}
+.card-dark{background:var(--ink);border:1px solid var(--ink-3);border-radius:var(--r2);padding:18px 20px;margin-bottom:14px;}
+
+/* MARKET TABLE */
+.mkt-wrap{background:var(--white);border:1px solid var(--silver);border-radius:var(--r2);overflow:hidden;box-shadow:var(--sh);}
 .mkt-table{width:100%;border-collapse:collapse;font-size:.8rem;}
-.mkt-table th{background:#f8fafc;color:#1e3a8a;font-size:.65rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:11px 14px;text-align:left;border-bottom:2px solid var(--border);white-space:nowrap;}
-.mkt-table td{padding:10px 14px;border-bottom:1px solid var(--border);font-family:'JetBrains Mono',monospace;font-size:.77rem;color:var(--text);vertical-align:middle;}
+.mkt-table th{
+  background:var(--ghost);color:var(--slate);
+  font-size:.62rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  padding:12px 16px;text-align:left;border-bottom:2px solid var(--silver);white-space:nowrap;
+}
+.mkt-table td{
+  padding:11px 16px;border-bottom:1px solid var(--ghost);
+  font-family:'DM Mono',monospace;font-size:.77rem;color:var(--ink);vertical-align:middle;
+}
 .mkt-table tr:last-child td{border-bottom:none;}
-.mkt-table tr:hover td{background:var(--blue-ll);}
-.mkt-table .val-row td{background:rgba(22,163,74,.04);}
-.mkt-table .fav-row td{background:rgba(29,78,216,.03);}
-.mkt-horse{font-family:'Inter',sans-serif;font-weight:700;font-size:.86rem;color:var(--text);}
-.mkt-fav{display:inline-block;padding:1px 7px;border-radius:3px;background:var(--blue-l);color:var(--blue);font-size:.58rem;font-weight:700;margin-left:5px;text-transform:uppercase;letter-spacing:.06em;}
-.mkt-val{display:inline-block;padding:1px 7px;border-radius:3px;background:var(--green-l);color:var(--green);font-size:.58rem;font-weight:700;margin-left:5px;text-transform:uppercase;letter-spacing:.06em;}
-.edge-pos{color:var(--green);font-weight:700;}
-.edge-neg{color:var(--red);}
-.edge-neu{color:var(--text4);}
-.prob-bar{height:5px;border-radius:3px;background:var(--border);overflow:hidden;margin-top:4px;}
-.prob-fill{height:5px;border-radius:3px;}
-.comp-row{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--border);}
-.comp-name{font-family:'JetBrains Mono',monospace;font-size:.66rem;color:var(--text3);width:90px;flex-shrink:0;}
-.comp-score{font-family:'JetBrains Mono',monospace;font-size:.66rem;color:var(--text2);width:48px;text-align:right;flex-shrink:0;}
-.comp-bar{flex:1;height:4px;border-radius:2px;background:var(--border);}
-.comp-fill{height:4px;border-radius:2px;}
-.smap-row{display:flex;align-items:center;gap:14px;padding:10px 16px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);margin-bottom:6px;box-shadow:var(--sh);}
-.smap-pos{font-size:.72rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;width:80px;flex-shrink:0;}
-.smap-horses{font-family:'JetBrains Mono',monospace;font-size:.78rem;color:var(--text2);flex:1;}
-.smap-cnt{font-family:'JetBrains Mono',monospace;font-size:.68rem;color:var(--text4);width:24px;text-align:right;}
-.gate-row{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);}
-.gate-lbl{font-size:.8rem;color:var(--text2);flex:1;font-weight:500;}
-.gate-detail{font-family:'JetBrains Mono',monospace;font-size:.7rem;color:var(--text4);}
-.stake-card{background:linear-gradient(135deg,#1e3a8a 0%,#1d4ed8 100%);border-radius:var(--r2);padding:18px 20px;margin-bottom:10px;box-shadow:0 4px 20px rgba(29,78,216,.3);}
-.stake-amount{font-family:'JetBrains Mono',monospace;font-size:2.2rem;font-weight:700;color:#fff;line-height:1;}
-.stake-label{font-size:.7rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:rgba(255,255,255,.6);margin-bottom:6px;}
-.stake-detail{font-family:'JetBrains Mono',monospace;font-size:.72rem;color:rgba(255,255,255,.75);margin-top:6px;}
-.race-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);}
+.mkt-table tr:hover td{background:var(--sap-ll);}
+.mkt-table .val-row td{background:rgba(26,140,78,.04);}
+.mkt-table .fav-row td{background:rgba(34,85,204,.03);}
+.mkt-horse{font-family:'DM Sans',sans-serif;font-weight:700;font-size:.88rem;color:var(--ink);}
+.mkt-badge{display:inline-block;padding:1px 7px;border-radius:3px;font-size:.58rem;font-weight:700;margin-left:6px;text-transform:uppercase;letter-spacing:.06em;}
+.badge-fav{background:var(--sap-ll);color:var(--sap);}
+.badge-val{background:var(--go-l);color:var(--go);}
+.badge-live{background:var(--warn-l);color:var(--warn);}
+.edge-pos{color:var(--go);font-weight:700;}
+.edge-neg{color:var(--stop);}
+.edge-neu{color:var(--mist);}
+.prob-bar{height:4px;border-radius:2px;background:var(--silver);overflow:hidden;margin-top:5px;}
+.prob-fill{height:4px;border-radius:2px;}
+
+/* SPEEDMAP */
+.tempo-banner{
+  display:flex;align-items:center;gap:16px;
+  background:var(--white);border:1px solid var(--silver);
+  border-radius:var(--r2);padding:16px 20px;margin-bottom:16px;box-shadow:var(--sh);
+}
+.smap-row{
+  display:flex;align-items:center;gap:14px;
+  padding:10px 16px;background:var(--white);border:1px solid var(--silver);
+  border-radius:var(--r);margin-bottom:6px;box-shadow:var(--sh);
+}
+.smap-pos{font-size:.7rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;width:82px;flex-shrink:0;}
+.smap-horses{font-family:'DM Mono',monospace;font-size:.78rem;color:var(--ink-3);flex:1;}
+.smap-cnt{font-family:'DM Mono',monospace;font-size:.68rem;color:var(--mist);width:24px;text-align:right;}
+
+/* FACTOR BARS */
+.factor-row{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--ghost);}
+.factor-name{font-size:.72rem;color:var(--steel);width:100px;flex-shrink:0;font-weight:500;}
+.factor-bar{flex:1;height:4px;border-radius:2px;background:var(--silver);}
+.factor-fill{height:4px;border-radius:2px;}
+.factor-score{font-family:'DM Mono',monospace;font-size:.65rem;color:var(--ink-3);width:52px;text-align:right;flex-shrink:0;}
+
+/* GATE ROWS */
+.gate-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--ghost);}
+.gate-lbl{font-size:.82rem;color:var(--ink-3);flex:1;font-weight:500;}
+.gate-detail{font-family:'DM Mono',monospace;font-size:.7rem;color:var(--steel);}
+
+/* STAKE CARD */
+.stake-card{
+  background:linear-gradient(135deg,var(--ink-2) 0%,var(--ink-3) 100%);
+  border:1px solid var(--brass-dark);
+  border-radius:var(--r2);padding:20px 22px;margin-bottom:12px;
+  box-shadow:0 4px 20px rgba(13,15,20,.35);
+}
+.stake-lbl{font-size:.66rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--brass-l);margin-bottom:8px;}
+.stake-amount{font-family:'DM Mono',monospace;font-size:2.4rem;font-weight:700;color:var(--white);line-height:1;}
+.stake-detail{font-family:'DM Mono',monospace;font-size:.72rem;color:rgba(255,255,255,.65);margin-top:7px;}
+
+/* BET BANNER */
+.bet-banner{
+  background:linear-gradient(135deg,var(--go),#22a862);
+  border-radius:var(--r2);padding:14px 18px;margin-bottom:12px;
+}
+.bet-banner-title{font-size:.82rem;font-weight:700;color:var(--white);margin-bottom:3px;}
+.bet-banner-sub{font-size:.74rem;color:rgba(255,255,255,.85);}
+
+/* RACE / MEETING ROWS */
+.race-row{display:flex;align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--ghost);}
 .race-row:last-child{border-bottom:none;}
-.race-num{font-family:'JetBrains Mono',monospace;font-size:.85rem;font-weight:700;color:var(--blue);width:30px;flex-shrink:0;}
-.race-info{flex:1;margin-left:12px;}
-.race-name{font-size:.88rem;font-weight:600;color:var(--text);}
-.race-meta{font-family:'JetBrains Mono',monospace;font-size:.68rem;color:var(--text4);margin-top:3px;}
-.section-hdr{font-size:.7rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--text4);border-bottom:1px solid var(--border);padding-bottom:8px;margin:24px 0 16px;}
-.dl-label{font-size:.66rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--text4);margin-bottom:4px;}
-.dl-value{font-family:'JetBrains Mono',monospace;font-size:1.0rem;color:var(--text);font-weight:600;}
-.dl-value.green{color:var(--green);}
-.dl-value.red{color:var(--red);}
-.dl-value.blue{color:var(--blue);}
-.debug-box{background:#1e293b;border:1px solid #334155;border-radius:var(--r);padding:12px 14px;font-family:'JetBrains Mono',monospace;font-size:.72rem;color:#94a3b8;white-space:pre-wrap;max-height:300px;overflow-y:auto;}
-hr{border:none;border-top:1px solid var(--border);margin:24px 0;}
+.race-num{font-family:'DM Mono',monospace;font-size:.9rem;font-weight:700;color:var(--sap);width:30px;flex-shrink:0;}
+.race-name{font-size:.9rem;font-weight:600;color:var(--ink);}
+.race-meta{font-family:'DM Mono',monospace;font-size:.66rem;color:var(--mist);margin-top:3px;}
+
+.section-hdr{
+  font-size:.63rem;font-weight:700;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--mist);border-bottom:1px solid var(--silver);
+  padding-bottom:8px;margin:28px 0 16px;
+}
+
+.dl-label{font-size:.63rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--mist);margin-bottom:4px;}
+.dl-value{font-family:'DM Mono',monospace;font-size:1.0rem;color:var(--ink);font-weight:600;}
+.dl-value.c-green{color:var(--go);}
+.dl-value.c-red{color:var(--stop);}
+.dl-value.c-blue{color:var(--sap);}
+.dl-value.c-brass{color:var(--brass-dark);}
+
+.debug-box{
+  background:var(--ink);border:1px solid var(--ink-3);border-radius:var(--r);
+  padding:12px 14px;font-family:'DM Mono',monospace;font-size:.72rem;
+  color:var(--mist);white-space:pre-wrap;max-height:300px;overflow-y:auto;
+}
+.empty-state{text-align:center;padding:70px 20px;color:var(--mist);}
+.empty-icon{font-size:2.8rem;margin-bottom:14px;opacity:.6;}
+.empty-title{font-family:'Playfair Display',serif;font-size:1.1rem;font-weight:700;color:var(--slate);margin-bottom:7px;}
+.empty-sub{font-size:.84rem;color:var(--mist);line-height:1.7;}
+
+/* LIVE PRICE BADGE */
+.live-price{
+  display:inline-flex;align-items:center;gap:5px;
+  font-family:'DM Mono',monospace;font-size:.82rem;font-weight:700;
+  color:var(--ink);
+}
+.live-dot{width:6px;height:6px;border-radius:50%;background:#22c55e;animation:pulse 2s infinite;flex-shrink:0;}
+
+hr{border:none;border-top:1px solid var(--ghost);margin:26px 0;}
 .prob-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
-.prob-cell{background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;}
-.prob-cell-blue{background:var(--blue-ll);border:1px solid var(--blue-m);border-radius:var(--r);padding:10px 12px;}
-.empty-state{text-align:center;padding:60px 20px;color:var(--text4);}
-.empty-icon{font-size:3rem;margin-bottom:12px;}
-.empty-title{font-size:1rem;font-weight:600;color:var(--text3);margin-bottom:6px;}
-.empty-sub{font-size:.82rem;color:var(--text4);line-height:1.6;}
-.bet-banner{background:linear-gradient(135deg,#14532d,#16a34a);border-radius:var(--r2);padding:14px 18px;margin-bottom:12px;}
-.bet-banner-title{font-size:.8rem;font-weight:700;color:#fff;letter-spacing:.04em;text-transform:uppercase;margin-bottom:3px;}
-.bet-banner-sub{font-size:.76rem;color:rgba(255,255,255,.8);}
+.prob-cell{background:var(--ghost);border:1px solid var(--silver);border-radius:var(--r);padding:11px 14px;}
+.prob-cell-blue{background:var(--sap-ll);border:1px solid var(--sap-l);border-radius:var(--r);padding:11px 14px;}
+
+/* Odds update flash */
+@keyframes flash{0%{background:rgba(201,164,74,.35)}100%{background:transparent}}
+.price-updated{animation:flash .8s ease-out;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -187,7 +444,10 @@ DEFAULTS = {
     "min_odds": 2.0, "max_odds": 50.0, "min_rating": 50,
     "min_edge": 3.0, "min_tj_a2e": 0.8,
     "notes": {},
-    "_api_log": [],   # list of dicts: {url, status, keys}
+    "_api_log": [],
+    "_live_prices": {},   # {horse_name: price}  — scraped live
+    "_live_prices_ts": None,  # datetime of last scrape
+    "_live_source": "",
     "fetch_status": "", "fetch_count": 0,
 }
 for k, v in DEFAULTS.items():
@@ -198,7 +458,6 @@ for k, v in DEFAULTS.items():
 BASE_URL = "https://api.puntingform.com.au/v2"
 
 def pf_date(d: date) -> str:
-    """d-MMM-yyyy  e.g. 4-Apr-2026  (no leading zero — required by API)"""
     import platform
     fmt = "%#d-%b-%Y" if platform.system() == "Windows" else "%-d-%b-%Y"
     return d.strftime(fmt)
@@ -206,13 +465,9 @@ def pf_date(d: date) -> str:
 def _log_api(url: str, params: dict, status: int, note: str = ""):
     safe = {k: v for k, v in params.items() if k != "apiKey"}
     st.session_state["_api_log"].append({
-        "url": url,
-        "params": safe,
-        "status": status,
-        "note": note,
-        "ts": datetime.now().strftime("%H:%M:%S"),
+        "url": url, "params": safe, "status": status,
+        "note": note, "ts": datetime.now().strftime("%H:%M:%S"),
     })
-    # Keep last 40 only
     st.session_state["_api_log"] = st.session_state["_api_log"][-40:]
 
 def pf_get(endpoint: str, params: dict = {}, silent: bool = False) -> Optional[dict]:
@@ -251,49 +506,185 @@ def safe_int(v, d: int = 0) -> int:
     try: return int(v)
     except: return d
 
-# ─── PAYLOAD EXTRACTION ───────────────────────────────────────────────────────
-# The PuntingForm API wraps runners in many different shapes. This function
-# tries every known nesting pattern before giving up.
 
+# ─── LIVE PRICE SCRAPING ──────────────────────────────────────────────────────
+SCRAPE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-AU,en;q=0.9",
+    "Referer": "https://www.tab.com.au/",
+}
+
+def _normalise_horse_name(name: str) -> str:
+    """Lowercase, strip punctuation for fuzzy matching."""
+    return re.sub(r"[^a-z0-9 ]", "", name.lower().strip())
+
+def scrape_tab_prices(track_name: str, race_number: int, race_date: date) -> dict:
+    """
+    Fetch live win prices from the TAB.com.au racing API (public JSON endpoint).
+    Returns dict: {normalised_horse_name: price}
+    Falls back to Betfair SP data from PuntingForm if TAB fails.
+    """
+    prices = {}
+    source = ""
+
+    # --- Attempt 1: TAB API (public, no auth) ---
+    # TAB uses a slug like "2025-01-01/R1/thoroughbred" with venue code
+    try:
+        date_str = race_date.strftime("%Y-%m-%d")
+        # TAB venue search
+        venue_url = "https://api.tab.com.au/v1/tab-info-service/racing/dates/{}/meetings".format(date_str)
+        r = requests.get(venue_url, headers=SCRAPE_HEADERS, timeout=8)
+        if r.ok:
+            data = r.json()
+            meetings = data.get("meetings", [])
+            # Find matching meeting
+            track_norm = _normalise_horse_name(track_name)
+            matched_meeting = None
+            for m in meetings:
+                m_name = _normalise_horse_name(m.get("meetingName","") or m.get("venueName",""))
+                if track_norm in m_name or m_name in track_norm:
+                    matched_meeting = m
+                    break
+            if matched_meeting:
+                # Get race detail
+                meeting_id = matched_meeting.get("meetingId","")
+                race_url = "https://api.tab.com.au/v1/tab-info-service/racing/dates/{}/meetings/{}/races/{}".format(
+                    date_str, meeting_id, race_number)
+                r2 = requests.get(race_url, headers=SCRAPE_HEADERS, timeout=8)
+                if r2.ok:
+                    rdata = r2.json()
+                    for runner in rdata.get("runners", []):
+                        name = runner.get("runnerName","")
+                        win_odds = runner.get("fixedOdds", {}).get("returnWin", 0)
+                        if not win_odds:
+                            win_odds = runner.get("parimutuel", {}).get("returnWin", 0)
+                        if name and win_odds and float(win_odds) > 1.0:
+                            prices[_normalise_horse_name(name)] = float(win_odds)
+                    if prices:
+                        source = "TAB.com.au live"
+    except Exception:
+        pass
+
+    # --- Attempt 2: Betfair Exchange via TAB API alternate endpoint ---
+    if not prices:
+        try:
+            date_str = race_date.strftime("%Y-%m-%d")
+            url = f"https://api.tab.com.au/v1/tab-info-service/racing/dates/{date_str}/meetings"
+            params = {"jurisdiction": "QLD"}
+            r = requests.get(url, headers=SCRAPE_HEADERS, params=params, timeout=8)
+            if r.ok:
+                data = r.json()
+                meetings_list = data.get("meetings", [])
+                track_norm = _normalise_horse_name(track_name)
+                for m in meetings_list:
+                    m_name = _normalise_horse_name(m.get("meetingName","") or "")
+                    if track_norm in m_name or m_name in track_norm:
+                        for race in m.get("races", []):
+                            if race.get("raceNumber") == race_number:
+                                for runner in race.get("runners", []):
+                                    name = runner.get("runnerName","")
+                                    price = safe_float(runner.get("fixedOdds",{}).get("returnWin",0))
+                                    if not price:
+                                        price = safe_float(runner.get("parimutuel",{}).get("returnWin",0))
+                                    if name and price > 1.0:
+                                        prices[_normalise_horse_name(name)] = price
+                        if prices:
+                            source = "TAB.com.au (embedded)"
+                            break
+        except Exception:
+            pass
+
+    # --- Attempt 3: Sky Racing / Racing and Sports public API ---
+    if not prices:
+        try:
+            date_str = race_date.strftime("%Y-%m-%d")
+            url = f"https://www.racingandpunting.com.au/api/race/{date_str}/{_normalise_horse_name(track_name).replace(' ', '-')}/{race_number}"
+            r = requests.get(url, headers=SCRAPE_HEADERS, timeout=8)
+            if r.ok:
+                data = r.json()
+                for runner in data.get("horses", data.get("runners", [])):
+                    name = runner.get("horse_name","") or runner.get("name","")
+                    price = safe_float(runner.get("fixed_win","") or runner.get("win_price","") or 0)
+                    if name and price > 1.0:
+                        prices[_normalise_horse_name(name)] = price
+                if prices:
+                    source = "RacingAndPunting"
+        except Exception:
+            pass
+
+    return prices, source
+
+
+def get_live_price(horse_name: str) -> Optional[float]:
+    """Look up a horse's live price from the cached scrape."""
+    live = st.session_state.get("_live_prices", {})
+    if not live:
+        return None
+    norm = _normalise_horse_name(horse_name)
+    # Exact match
+    if norm in live:
+        return live[norm]
+    # Partial match — handle "(NZ)" suffixes etc.
+    for k, v in live.items():
+        if norm[:8] in k or k[:8] in norm:
+            return v
+    return None
+
+
+def refresh_live_prices(race: dict, race_date_obj: date):
+    """Trigger a live price scrape for the current race."""
+    track = race.get("_meetingName","")
+    rnum = safe_int(race.get("raceNumber") or race.get("number") or 1)
+    with st.spinner("Fetching live odds..."):
+        prices, source = scrape_tab_prices(track, rnum, race_date_obj)
+    st.session_state["_live_prices"] = prices
+    st.session_state["_live_prices_ts"] = datetime.now()
+    st.session_state["_live_source"] = source
+    return prices, source
+
+
+def get_best_price(runner: dict) -> float:
+    """Return live price if available, else fall back to SP / fixed odds."""
+    name = get_runner_name(runner)
+    live = get_live_price(name)
+    if live and live > 1.0:
+        return live
+    # Fallback chain
+    for field in ("fixedOddsWin", "fixedWin", "priceSP", "price", "sp"):
+        v = safe_float(runner.get(field, 0))
+        if v > 1.01:
+            return v
+    return 0.0
+
+
+def price_source_label(runner: dict) -> str:
+    name = get_runner_name(runner)
+    live = get_live_price(name)
+    if live and live > 1.0:
+        return "live"
+    return "sp"
+
+
+# ─── PAYLOAD EXTRACTION ───────────────────────────────────────────────────────
 def extract_runners_from_payload(data) -> list:
-    """
-    Try every known shape the fields/form endpoints return runners in:
-      - top-level list
-      - {"payLoad": [...]}
-      - {"payLoad": {"fields": [...]}}
-      - {"payLoad": {"runners": [...]}}
-      - {"payLoad": {"horses": [...]}}
-      - {"fields": [...]}
-      - {"runners": [...]}
-      - {"horses": [...]}
-      - list-of-dicts where each dict has a "runners" key (meeting shape)
-    Returns the first non-empty list found, else [].
-    """
     if not data:
         return []
-
-    # Unwrap payLoad if present
     payload = data.get("payLoad", data) if isinstance(data, dict) else data
-
-    # Direct list
     if isinstance(payload, list):
-        # Each item might be a runner directly, or a race-wrapper
         if payload and isinstance(payload[0], dict):
-            # Check if first item looks like a runner (has name/horseId)
             first = payload[0]
             if any(k in first for k in ("name","runnerName","horseName","horseId","runnerId","HorseId","RunnerID")):
                 return payload
-            # Maybe it's a list of races — extract runners from first race
             for race in payload:
-                for rkey in ("runners","fields","horses","runners"):
+                for rkey in ("runners","fields","horses"):
                     runners = race.get(rkey, [])
                     if runners and isinstance(runners, list):
                         return runners
         return payload
-
     if isinstance(payload, dict):
-        # Try common runner list keys
-        for key in ("fields", "runners", "horses", "runners", "payLoad"):
+        for key in ("fields", "runners", "horses", "payLoad"):
             val = payload.get(key)
             if isinstance(val, list) and val:
                 first = val[0]
@@ -301,16 +692,13 @@ def extract_runners_from_payload(data) -> list:
                     k in first for k in ("name","runnerName","horseName","horseId","runnerId","HorseId","RunnerID","barrier","barrierNumber")
                 ):
                     return val
-        # recurse one more level
         for key, val in payload.items():
             if isinstance(val, list) and val and isinstance(val[0], dict):
                 return val
-
     return []
 
 
 def extract_meetings_list(data) -> list:
-    """Extract list of meeting objects from meetingslist response."""
     if not data:
         return []
     if isinstance(data, list):
@@ -318,13 +706,11 @@ def extract_meetings_list(data) -> list:
     payload = data.get("payLoad", data) if isinstance(data, dict) else data
     if isinstance(payload, list):
         return payload
-    # Sometimes wrapped in another key
     if isinstance(payload, dict):
         for key in ("meetings", "meetingList", "meetingsList", "data"):
             val = payload.get(key)
             if isinstance(val, list) and val:
                 return val
-        # Return values that are lists
         for val in payload.values():
             if isinstance(val, list) and val:
                 return val
@@ -332,19 +718,16 @@ def extract_meetings_list(data) -> list:
 
 
 def extract_races_from_meeting(data) -> list:
-    """Extract list of race objects from a meeting detail response."""
     if not data:
         return []
     payload = data.get("payLoad", data) if isinstance(data, dict) else data
     if isinstance(payload, list):
         if payload and isinstance(payload[0], dict):
-            # Could be races directly, or meeting objects containing races
             first = payload[0]
             for rkey in ("races","raceList","Races"):
                 races = first.get(rkey, [])
                 if races:
                     return races
-            # Already a list of races
             if any(k in first for k in ("raceNumber","raceName","number","name","raceNo")):
                 return payload
     if isinstance(payload, dict):
@@ -370,7 +753,6 @@ def get_horse_id(obj: dict) -> str:
         v = obj.get(f)
         if v and str(v).strip() not in ("","0","null","None"):
             return str(v).strip()
-    # Fall back to name if nothing else
     name = obj.get("name") or obj.get("runnerName") or obj.get("horseName") or ""
     return str(name).strip() or ""
 
@@ -391,12 +773,8 @@ def get_runner_name(obj: dict) -> str:
             obj.get("horse") or obj.get("Horse") or "Unknown")
 
 
-# ─── MEETINGS — FAST (no per-meeting detail call) ────────────────────────────
+# ─── MEETINGS ────────────────────────────────────────────────────────────────
 def fetch_meetings_fast(d: date) -> list:
-    """
-    Step 1: just get the list of meetings (names, states, IDs).
-    Does NOT fetch races — that happens lazily when user expands a meeting.
-    """
     ds = pf_date(d)
     data = pf_get("form/meetingslist", {"meetingDate": ds})
     if not data:
@@ -414,14 +792,9 @@ def fetch_meetings_fast(d: date) -> list:
 
 
 def fetch_races_for_meeting(m: dict, d: date) -> list:
-    """
-    Step 2: fetch races for a single meeting (called when user expands it).
-    Tries meetingId first, then track name.
-    """
-    ds    = pf_date(d)
-    name  = m.get("_name", "")
-    mid   = str(m.get("meetingId") or m.get("id") or "")
-
+    ds   = pf_date(d)
+    name = m.get("_name", "")
+    mid  = str(m.get("meetingId") or m.get("id") or "")
     data = None
     if mid and mid not in ("0", ""):
         data = pf_get("form/meeting", {"meetingId": mid}, silent=True)
@@ -429,7 +802,6 @@ def fetch_races_for_meeting(m: dict, d: date) -> list:
         data = pf_get("form/meeting", {"meetingDate": ds, "track": name}, silent=True)
     if not data:
         return []
-
     races = extract_races_from_meeting(data)
     for race in races:
         race.setdefault("_meetingName",  name)
@@ -441,12 +813,7 @@ def fetch_races_for_meeting(m: dict, d: date) -> list:
 
 
 # ─── RUNNERS ────────────────────────────────────────────────────────────────
-def fetch_race_field(race: dict) -> tuple[list, dict]:
-    """
-    Fetch runners for one race.
-    Returns (runners_list, debug_info_dict).
-    Tries multiple endpoint + param combinations, logs all attempts.
-    """
+def fetch_race_field(race: dict) -> tuple:
     ds    = race.get("_meetingDate", "")
     track = race.get("_meetingName", "")
     rnum  = str(race.get("raceNumber") or race.get("number") or race.get("raceNo") or "1")
@@ -459,38 +826,29 @@ def fetch_race_field(race: dict) -> tuple[list, dict]:
         debug["attempts"].append({
             "label": label, "endpoint": endpoint,
             "params": {k:v for k,v in params.items() if k!="apiKey"},
-            "got_data": data is not None,
-            "runners_found": len(runners),
+            "got_data": data is not None, "runners_found": len(runners),
             "top_keys": list(data.keys())[:8] if isinstance(data, dict) else (
                 list(data[0].keys())[:8] if isinstance(data, list) and data and isinstance(data[0], dict) else []),
         })
         if data and not runners:
-            # Store a sample of raw data to help diagnose
             debug["raw_samples"].append({"label": label, "sample": str(data)[:500]})
         return runners
 
-    # Attempt 1: fields by raceId
     if rid:
         runners = _try("form/fields", {"raceId": rid}, f"fields?raceId={rid}")
         if runners: return runners, debug
-
-    # Attempt 2: fields by date+track+raceNumber
     if ds and track and rnum:
         runners = _try("form/fields", {"meetingDate": ds, "track": track, "raceNumber": rnum},
                        f"fields?date={ds}&track={track}&raceNum={rnum}")
         if runners: return runners, debug
-
-    # Attempt 3: form (past form endpoint also contains current field)
     if rid:
         runners = _try("form/form", {"raceId": rid}, f"form?raceId={rid}")
         if runners: return runners, debug
-
     if ds and track and rnum:
         runners = _try("form/form", {"meetingDate": ds, "track": track, "raceNumber": rnum},
                        f"form?date={ds}&track={track}&raceNum={rnum}")
         if runners: return runners, debug
 
-    # Attempt 4: re-fetch meeting and pull race's embedded runners
     mid = race.get("_meetingId", "")
     if mid:
         data = pf_get("form/meeting", {"meetingId": mid}, silent=True)
@@ -504,12 +862,11 @@ def fetch_race_field(race: dict) -> tuple[list, dict]:
         for r in races:
             r_num = str(r.get("raceNumber") or r.get("number") or r.get("raceNo") or "")
             if r_num == rnum:
-                embedded = []
                 for rkey in ("runners","fields","horses"):
                     embedded = r.get(rkey, [])
-                    if embedded: break
-                debug["attempts"].append({"label": f"meeting embed rnum={rnum}", "runners_found": len(embedded)})
-                if embedded: return embedded, debug
+                    if embedded:
+                        debug["attempts"].append({"label": f"meeting embed rnum={rnum}", "runners_found": len(embedded)})
+                        return embedded, debug
 
     return [], debug
 
@@ -519,17 +876,14 @@ def fetch_form_for_race(race: dict) -> list:
     track = race.get("_meetingName", "")
     rnum  = str(race.get("raceNumber") or race.get("number") or "1")
     rid   = get_race_id(race)
-
     if rid:
         data = pf_get("form/form", {"raceId": rid}, silent=True)
         rows = extract_runners_from_payload(data) if data else []
         if rows: return rows
-
     if ds and track and rnum:
         data = pf_get("form/form", {"meetingDate": ds, "track": track, "raceNumber": rnum})
         rows = extract_runners_from_payload(data) if data else []
         if rows: return rows
-
     return []
 
 
@@ -538,13 +892,11 @@ def fetch_pf_ratings(race: dict) -> dict:
     track = race.get("_meetingName", "")
     rnum  = str(race.get("raceNumber") or race.get("number") or "1")
     rid   = get_race_id(race)
-
     data = None
     if rid:
         data = pf_get("ratings/meetingratings", {"raceId": rid}, silent=True)
     if not data and ds and track:
         data = pf_get("ratings/meetingratings", {"meetingDate": ds, "track": track, "raceNumber": rnum}, silent=True)
-
     rows = extract_runners_from_payload(data) if data else []
     result = {}
     for row in rows:
@@ -558,13 +910,11 @@ def fetch_sectionals(race: dict) -> dict:
     track = race.get("_meetingName", "")
     rnum  = str(race.get("raceNumber") or race.get("number") or "1")
     rid   = get_race_id(race)
-
     data = None
     if rid:
         data = pf_get("ratings/meetingsectionals", {"raceId": rid}, silent=True)
     if not data and ds and track:
         data = pf_get("ratings/meetingsectionals", {"meetingDate": ds, "track": track, "raceNumber": rnum}, silent=True)
-
     rows = extract_runners_from_payload(data) if data else []
     result = {}
     for row in rows:
@@ -575,31 +925,19 @@ def fetch_sectionals(race: dict) -> dict:
 
 # ─── RATING ENGINE ───────────────────────────────────────────────────────────
 FACTOR_WEIGHTS = {
-    "closing_speed":      24,
-    "speed_rating":       16,
-    "recent_form":        12,
-    "class_differential": 9,
-    "in_running_luck":    8,
-    "pace_dynamics":      7,
-    "weight_penalty":     5,
-    "barrier_position":   4,
-    "jt_combination":     6,
-    "track_record":       5,
-    "distance_record":    4,
+    "closing_speed": 24, "speed_rating": 16, "recent_form": 12,
+    "class_differential": 9, "in_running_luck": 8, "pace_dynamics": 7,
+    "weight_penalty": 5, "barrier_position": 4, "jt_combination": 6,
+    "track_record": 5, "distance_record": 4,
 }
 MAX_SCORE = sum(FACTOR_WEIGHTS.values())
 FACTOR_LBLS = {
-    "closing_speed":       "Closing Speed",
-    "speed_rating":        "Speed Rating",
-    "recent_form":         "Recent Form",
-    "class_differential":  "Class",
-    "in_running_luck":     "Unlucky",
-    "pace_dynamics":       "Pace Fit",
-    "weight_penalty":      "Weight",
-    "barrier_position":    "Barrier",
-    "jt_combination":      "J+T Combo",
-    "track_record":        "Track",
-    "distance_record":     "Distance",
+    "closing_speed": "Closing Speed", "speed_rating": "Speed Rating",
+    "recent_form": "Recent Form", "class_differential": "Class",
+    "in_running_luck": "Unlucky", "pace_dynamics": "Pace Fit",
+    "weight_penalty": "Weight", "barrier_position": "Barrier",
+    "jt_combination": "J+T Combo", "track_record": "Track",
+    "distance_record": "Distance",
 }
 TROUBLE_KEYWORDS = [
     ("no clear run",4.0),("held up",3.5),("blocked",3.5),("checked",3.0),
@@ -623,9 +961,7 @@ def _sectional_score(runner, past, secs):
         pos=safe_float(run.get("finishingPosition",10))
         field=max(safe_float(run.get("numberOfRunners",10)),1)
         margin=safe_float(run.get("marginBeaten",20))
-        pos_score=max(0,(1-(pos-1)/field))*16
-        margin_score=max(0,(1-margin/12))*8 if pos!=1 else 8
-        scores.append(min(pos_score+margin_score,24))
+        scores.append(min(max(0,(1-(pos-1)/field))*16+max(0,(1-margin/12))*8 if pos!=1 else max(0,(1-(pos-1)/field))*16+8,24))
     if not scores:
         return round(min(max(safe_float(runner.get("winPct",0))/100*20,4),18),2)
     wts=[1.4,1.2,1.0,0.85,0.7,0.55,0.45][:len(scores)]
@@ -692,12 +1028,9 @@ def _unlucky_score(past):
 def _pace_score(runner, past, tempo="MODERATE"):
     pace_pos=safe_int(runner.get("pacePosition",3))
     score=3.5
-    if tempo=="HOT":
-        score+= 2.0 if pace_pos>=4 else 0.5 if pace_pos==3 else -1.5
-    elif tempo=="SOFT":
-        score+= 2.0 if pace_pos<=2 else 0.2 if pace_pos==3 else -1.0
-    elif tempo=="GENUINE":
-        score+= 0.5 if pace_pos==3 else 0
+    if tempo=="HOT": score+= 2.0 if pace_pos>=4 else 0.5 if pace_pos==3 else -1.5
+    elif tempo=="SOFT": score+= 2.0 if pace_pos<=2 else 0.2 if pace_pos==3 else -1.0
+    elif tempo=="GENUINE": score+= 0.5 if pace_pos==3 else 0
     for run in past[:4]:
         pe=safe_float(run.get("positionEarly") or run.get("firstPosition") or 5)
         pf_p=safe_float(run.get("finishingPosition",10))
@@ -749,7 +1082,6 @@ def _track_score(runner, past):
     return 2.5
 
 def _distance_score(runner, past):
-    dist=safe_float(runner.get("distance") or runner.get("raceDistance") or 1200)
     dr=runner.get("distanceRecord") or {}
     ds2=safe_float(dr.get("starts",0)); dw=safe_float(dr.get("firsts",0))
     dp=safe_float(dr.get("seconds",0))+safe_float(dr.get("thirds",0))
@@ -780,7 +1112,7 @@ def rate_runner(runner, past=[], secs={}, tempo="MODERATE"):
 
 # ─── MARKET FRAMING ──────────────────────────────────────────────────────────
 def frame_market(runners):
-    priced=[(r,safe_float(r.get("priceSP") or r.get("fixedOddsWin") or r.get("price") or 0)) for r in runners]
+    priced=[(r, get_best_price(r)) for r in runners]
     priced=[(r,p) for r,p in priced if p>1.01]
     if len(priced)<2: return {}
     raw_sum=sum(1/p for _,p in priced)
@@ -788,7 +1120,8 @@ def frame_market(runners):
     for r,sp in priced:
         hid=get_horse_id(r); raw=1/sp; true=raw/raw_sum
         out[hid]={"sp":sp,"raw_pct":round(raw*100,2),"true_pct":round(true*100,2),
-                  "fair_odds":round(1/true,2),"overround":round(raw_sum*100,1)}
+                  "fair_odds":round(1/true,2),"overround":round(raw_sum*100,1),
+                  "source": price_source_label(r)}
     return out
 
 def compute_model_prob(runner, rating, pf_r={}):
@@ -841,8 +1174,8 @@ def assess_value(model_prob, true_mkt_pct, sp, rating_pct, tj_a2e, min_rating, m
 
 # ─── SPEEDMAP ────────────────────────────────────────────────────────────────
 PACE_POSITIONS={1:"Leader",2:"On Pace",3:"Midfield",4:"Back",5:"Rear"}
-PACE_COLORS={"Leader":"var(--red)","On Pace":"var(--amber)","Midfield":"var(--blue-mid)",
-              "Back":"var(--text4)","Rear":"var(--text4)"}
+PACE_COLORS={"Leader":"var(--stop)","On Pace":"var(--warn)","Midfield":"var(--sap-mid)",
+              "Back":"var(--mist)","Rear":"var(--mist)"}
 
 def assign_pace_positions(runners):
     for r in runners:
@@ -856,7 +1189,7 @@ def classify_tempo(runners):
     on_pace=[r for r in runners if safe_int(r.get("pacePosition",3))==2]
     n=len(leaders)
     if n>=3: return {"tempo":"HOT","pill":"pill-red","desc":"Multiple leaders — burn-up likely. Favours closers.","strategy":"Back midfield-to-rear runners with closing ability."}
-    elif n==2: return {"tempo":"GENUINE","pill":"pill-amber","desc":"Two leaders — honest tempo. All styles viable.","strategy":"Slight lean toward on-pace runners."}
+    elif n==2: return {"tempo":"GENUINE","pill":"pill-amber","desc":"Two leaders — honest tempo. All running styles viable.","strategy":"Slight lean toward on-pace runners."}
     elif n==1 and len(on_pace)<=1: return {"tempo":"SOFT","pill":"pill-blue","desc":"Single uncontested leader — significant front-runner advantage.","strategy":"Favour the leader and nearest pursuer (draw ≤5)."}
     else: return {"tempo":"MODERATE","pill":"pill-muted","desc":"Balanced dynamics — no dominant pace factor.","strategy":"Rate on ability and class."}
 
@@ -913,13 +1246,13 @@ def bankroll_stats():
 # ─── SIDEBAR ─────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("""
-    <div class="sb-brand">
-      <div class="sb-logo"><span>🏇</span> Racing Edge</div>
-      <div class="sb-sub">PuntingForm API v2</div>
-      <span class="sb-version">v2.2.0</span>
+    <div class="brand-header">
+      <div class="brand-logo">🏇 Racing Edge</div>
+      <div class="brand-sub">PuntingForm API v2 · Live Odds</div>
+      <span class="brand-version">v3.0.0</span>
     </div>""", unsafe_allow_html=True)
 
-    st.markdown('<div class="sb-sec">API Connection</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sb-section">API Connection</div>', unsafe_allow_html=True)
     try: secret_key = st.secrets.get("PUNTINGFORM_API_KEY","")
     except: secret_key=""
 
@@ -931,11 +1264,11 @@ with st.sidebar:
         st.session_state.meetings=[]
 
     if st.session_state.api_key:
-        st.markdown('<div class="sb-status-ok">Connected</div>',unsafe_allow_html=True)
+        st.markdown('<div class="status-ok">Connected</div>',unsafe_allow_html=True)
     else:
-        st.markdown('<div class="sb-status-err">No key entered</div>',unsafe_allow_html=True)
+        st.markdown('<div class="status-err">No key entered</div>',unsafe_allow_html=True)
 
-    st.markdown('<div class="sb-sec">Race Selection</div>',unsafe_allow_html=True)
+    st.markdown('<div class="sb-section">Race Selection</div>',unsafe_allow_html=True)
     race_date=st.date_input("Date",value=date.today())
 
     AU_STATES=["NSW","VIC","QLD","SA","WA","TAS","NT","ACT"]
@@ -956,18 +1289,18 @@ with st.sidebar:
     if st.session_state.fetch_status=="ok":
         n=st.session_state.fetch_count
         st.markdown(
-            f'<div style="background:#052e16;border:1px solid #166534;border-radius:8px;padding:10px 14px;margin-top:8px">'
-            f'<div style="color:#4ade80;font-family:\'JetBrains Mono\',monospace;font-size:.78rem;font-weight:600">'
+            f'<div style="background:rgba(26,140,78,.1);border:1px solid rgba(26,140,78,.3);border-radius:8px;padding:10px 14px;margin-top:8px">'
+            f'<div style="color:#4ade80;font-family:\'DM Mono\',monospace;font-size:.78rem;font-weight:600">'
             f'✓ {n} meeting{"s" if n!=1 else ""} loaded</div>'
-            f'<div style="color:#16a34a;font-family:\'JetBrains Mono\',monospace;font-size:.66rem;margin-top:2px">{pf_date(race_date)}</div>'
+            f'<div style="color:#86efac;font-family:\'DM Mono\',monospace;font-size:.66rem;margin-top:2px">{pf_date(race_date)}</div>'
             f'</div>',unsafe_allow_html=True)
     elif st.session_state.fetch_status=="empty":
         st.markdown(
-            '<div style="background:#422006;border:1px solid #78350f;border-radius:8px;padding:10px 14px;margin-top:8px">'
-            '<div style="color:#fb923c;font-family:\'JetBrains Mono\',monospace;font-size:.78rem">⚠ No meetings found</div>'
+            '<div style="background:rgba(176,106,0,.1);border:1px solid rgba(176,106,0,.3);border-radius:8px;padding:10px 14px;margin-top:8px">'
+            '<div style="color:#fb923c;font-family:\'DM Mono\',monospace;font-size:.78rem">⚠ No meetings found</div>'
             '</div>',unsafe_allow_html=True)
 
-    st.markdown('<div class="sb-sec">Staking</div>',unsafe_allow_html=True)
+    st.markdown('<div class="sb-section">Staking</div>',unsafe_allow_html=True)
     st.session_state.bank=st.number_input("Bankroll ($)",value=float(st.session_state.bank),step=50.0,min_value=1.0)
     if st.session_state.starting_bank==1000.0 and st.session_state.bank!=1000.0:
         st.session_state.starting_bank=st.session_state.bank
@@ -980,7 +1313,7 @@ with st.sidebar:
         st.session_state.level_stake=st.number_input("Fixed Stake ($)",value=st.session_state.level_stake,step=5.0)
     st.session_state.max_stake_pct=st.slider("Max Stake % of Bank",1.0,20.0,st.session_state.max_stake_pct,0.5)
 
-    st.markdown('<div class="sb-sec">Bet Filters</div>',unsafe_allow_html=True)
+    st.markdown('<div class="sb-section">Bet Filters</div>',unsafe_allow_html=True)
     st.session_state.min_odds=st.number_input("Min Odds",value=st.session_state.min_odds,step=0.5,min_value=1.01)
     st.session_state.max_odds=st.number_input("Max Odds",value=st.session_state.max_odds,step=5.0)
     st.session_state.min_rating=st.slider("Min Rating %",0,100,st.session_state.min_rating)
@@ -991,10 +1324,10 @@ with st.sidebar:
         bpct=st.session_state.bank/st.session_state.starting_bank*100 if st.session_state.starting_bank else 100
         clr="#4ade80" if bpct>=100 else "#fb923c" if bpct>=85 else "#f87171"
         st.markdown(
-            f'<div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 14px;margin-top:12px">'
-            f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:.65rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">Bankroll</div>'
-            f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:1.4rem;font-weight:700;color:#f1f5f9">${st.session_state.bank:.0f}</div>'
-            f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:.72rem;color:{clr};margin-top:3px">{bpct-100:+.1f}% vs start</div>'
+            f'<div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:14px 16px;margin-top:14px">'
+            f'<div style="font-family:\'DM Mono\',monospace;font-size:.62rem;color:#64748b;text-transform:uppercase;letter-spacing:.1em;margin-bottom:7px">Bankroll</div>'
+            f'<div style="font-family:\'DM Mono\',monospace;font-size:1.5rem;font-weight:700;color:#f1f5f9">${st.session_state.bank:.0f}</div>'
+            f'<div style="font-family:\'DM Mono\',monospace;font-size:.72rem;color:{clr};margin-top:4px">{bpct-100:+.1f}% vs start</div>'
             f'</div>',unsafe_allow_html=True)
 
 
@@ -1005,12 +1338,12 @@ TAB_RACES, TAB_ANALYSIS, TAB_STAKING, TAB_BANKROLL, TAB_DEBUG = st.tabs([
 
 
 # ════════════════════════════════════════════════════════════════
-# TAB 1: MEETINGS & RACES
+# TAB 1 — MEETINGS & RACES
 # ════════════════════════════════════════════════════════════════
 with TAB_RACES:
-    st.markdown("""<div class="page-hdr"><div>
+    st.markdown("""<div class="page-header"><div>
+      <div class="page-eyebrow">Today's Card</div>
       <div class="page-title">Meetings & Races</div>
-      <div class="page-sub">Expand a meeting to load its races, then click Load on a race</div>
     </div></div>""",unsafe_allow_html=True)
 
     if not st.session_state.api_key:
@@ -1019,24 +1352,24 @@ with TAB_RACES:
         st.markdown("""<div class="empty-state">
           <div class="empty-icon">🏇</div>
           <div class="empty-title">No meetings loaded</div>
-          <div class="empty-sub">Click "Fetch Meetings" in the sidebar.</div>
+          <div class="empty-sub">Select a date and click "Fetch Meetings" in the sidebar.</div>
         </div>""",unsafe_allow_html=True)
 
     meetings=st.session_state.meetings
     if meetings:
         total_loaded=sum(len(m.get("races",[])) for m in meetings if m.get("_races_loaded"))
         st.markdown(
-            f'<div class="card-blue" style="display:flex;align-items:center;gap:24px;margin-bottom:20px">'
-            f'<div><div class="dl-label">Meetings</div><div class="dl-value blue">{len(meetings)}</div></div>'
-            f'<div style="width:1px;height:32px;background:var(--blue-m)"></div>'
-            f'<div><div class="dl-label">Date</div><div class="dl-value blue" style="font-size:.9rem">{pf_date(race_date)}</div></div>'
-            f'<div style="width:1px;height:32px;background:var(--blue-m)"></div>'
-            f'<div><div class="dl-label">Races loaded</div><div class="dl-value blue">{total_loaded}</div></div>'
+            f'<div class="card-brass" style="display:flex;align-items:center;gap:28px;margin-bottom:22px">'
+            f'<div><div class="dl-label">Meetings</div><div class="dl-value c-brass">{len(meetings)}</div></div>'
+            f'<div style="width:1px;height:32px;background:var(--brass-l)"></div>'
+            f'<div><div class="dl-label">Date</div><div class="dl-value c-brass" style="font-size:.9rem">{pf_date(race_date)}</div></div>'
+            f'<div style="width:1px;height:32px;background:var(--brass-l)"></div>'
+            f'<div><div class="dl-label">Races loaded</div><div class="dl-value c-brass">{total_loaded}</div></div>'
             f'</div>',unsafe_allow_html=True)
 
-        state_badge_map={"NSW":"pill-blue","VIC":"pill-blue","QLD":"pill-amber",
-                         "SA":"pill-green","WA":"pill-teal","TAS":"pill-muted",
-                         "NT":"pill-amber","ACT":"pill-muted"}
+        state_pill_map={"NSW":"pill-blue","VIC":"pill-blue","QLD":"pill-brass",
+                        "SA":"pill-green","WA":"pill-green","TAS":"pill-muted",
+                        "NT":"pill-amber","ACT":"pill-muted"}
 
         for mi, meeting in enumerate(meetings):
             name  = meeting.get("_name","Unknown")
@@ -1046,11 +1379,11 @@ with TAB_RACES:
             if state_filter and state.upper() not in [s.upper() for s in state_filter]:
                 continue
 
-            state_badge=state_badge_map.get(state.upper(),"pill-muted")
+            state_pill=state_pill_map.get(state.upper(),"pill-muted")
             races_loaded=meeting.get("_races_loaded",False)
             races=meeting.get("races",[])
             n_races=len(races)
-            exp_label=f"{name}  ·  {state}  {'·  ' + str(n_races) + ' races' if races_loaded else '(click to load races)'}"
+            exp_label=f"{name}  ·  {state}  {'·  ' + str(n_races) + ' races' if races_loaded else '(click to load)'}"
 
             with st.expander(exp_label,expanded=False):
                 if not races_loaded:
@@ -1058,17 +1391,16 @@ with TAB_RACES:
                         races=fetch_races_for_meeting(meeting, race_date)
                         meeting["races"]=races
                         meeting["_races_loaded"]=True
-                        # Update in session state
                         st.session_state.meetings[mi]=meeting
                     if not races:
                         st.markdown(f'<div class="alert alert-red">No races returned for {name}. Check Debug tab for API log.</div>',unsafe_allow_html=True)
                         continue
 
-                meta_html=(f'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;'
-                           f'padding-bottom:12px;border-bottom:1px solid var(--border)">'
-                           f'<span class="pill {state_badge}">{state}</span>')
+                meta_html=(f'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;'
+                           f'padding-bottom:14px;border-bottom:1px solid var(--ghost)">'
+                           f'<span class="pill {state_pill}">{state}</span>')
                 if cond: meta_html+=f'<span class="pill pill-muted">{cond}</span>'
-                meta_html+=f'<span class="pill pill-dark">{len(races)} races</span></div>'
+                meta_html+=f'<span class="pill pill-ink">{len(races)} races</span></div>'
                 st.markdown(meta_html,unsafe_allow_html=True)
 
                 valid_races=[r for r in races if r.get("raceName") or r.get("raceNumber") or r.get("number")]
@@ -1096,46 +1428,44 @@ with TAB_RACES:
                         st.markdown(
                             f'<div class="race-row">'
                             f'<div class="race-num">R{rnum}</div>'
-                            f'<div class="race-info">'
+                            f'<div style="flex:1;margin-left:12px">'
                             f'<div class="race-name">{rname}</div>'
                             f'<div class="race-meta">'
                             f'{time_str + "  ·  " if time_str else ""}{rdist}m'
                             f'{("  ·  "+str(rcls)) if rcls else ""}'
-                            f'{("  ·  ID:"+rid) if rid else ""}'
+                            f'{("  ·  #"+rid) if rid else ""}'
                             f'</div></div></div>',unsafe_allow_html=True)
                     with c2:
                         btn_key=f"load_{mi}_{rnum}_{rid}"
-                        if st.button("Load →",key=btn_key,use_container_width=True):
+                        if st.button("Load",key=btn_key,use_container_width=True):
                             st.session_state.selected_race=race
                             st.session_state.runners=[]
                             st.session_state.ratings={}
                             st.session_state.pf_ratings={}
                             st.session_state.sectionals={}
                             st.session_state.past_form_by_horse={}
+                            st.session_state["_live_prices"]={}
+                            st.session_state["_live_prices_ts"]=None
 
                             with st.spinner(f"Loading runners for R{rnum} {name}..."):
                                 runners, dbg=fetch_race_field(race)
                                 st.session_state["_last_field_debug"]=dbg
                                 if runners:
                                     st.session_state.runners=assign_pace_positions(runners)
-                                    st.success(f"✓ {len(runners)} runners loaded — go to Race Analysis tab")
+                                    # Auto-fetch live prices
+                                    prices, source = refresh_live_prices(race, race_date)
+                                    n_prices = len(prices)
+                                    price_msg = f" · {n_prices} live prices from {source}" if n_prices else " · Live prices unavailable (will use SP)"
+                                    st.success(f"✓ {len(runners)} runners loaded{price_msg} — go to Race Analysis tab")
                                 else:
-                                    # Show diagnostic immediately
                                     st.error("❌ No runners returned. See details below and check Debug tab.")
-                                    attempts=dbg.get("attempts",[])
-                                    for a in attempts:
+                                    for a in dbg.get("attempts",[]):
                                         status="✓" if a.get("runners_found",0)>0 else "✗"
-                                        st.markdown(
-                                            f'<div class="debug-box">{status} {a["label"]} → '
-                                            f'data={a.get("got_data","?")} runners={a.get("runners_found",0)} '
-                                            f'keys={a.get("top_keys",[])}</div>',
-                                            unsafe_allow_html=True)
-                                    for s in dbg.get("raw_samples",[]):
-                                        st.markdown(f'<div class="debug-box"><strong>{s["label"]}:</strong> {s["sample"]}</div>',unsafe_allow_html=True)
+                                        st.markdown(f'<div class="debug-box">{status} {a["label"]} → data={a.get("got_data","?")} runners={a.get("runners_found",0)} keys={a.get("top_keys",[])}</div>',unsafe_allow_html=True)
 
 
 # ════════════════════════════════════════════════════════════════
-# TAB 2: RACE ANALYSIS
+# TAB 2 — RACE ANALYSIS
 # ════════════════════════════════════════════════════════════════
 with TAB_ANALYSIS:
     race=st.session_state.selected_race
@@ -1150,7 +1480,7 @@ with TAB_ANALYSIS:
         st.stop()
 
     if not runners:
-        st.markdown('<div class="alert alert-amber">No runners loaded. Click Load on a race in the Meetings tab. Check the Debug tab if it keeps failing.</div>',unsafe_allow_html=True)
+        st.markdown('<div class="alert alert-amber">No runners loaded. Click Load on a race in the Meetings tab.</div>',unsafe_allow_html=True)
         st.stop()
 
     rname=race.get("raceName") or race.get("name") or "Race"
@@ -1161,56 +1491,81 @@ with TAB_ANALYSIS:
     rnum=race.get("raceNumber") or race.get("number") or "?"
     rid=get_race_id(race)
     rds=race.get("_meetingDate","")
-    rprize=race.get("prizeMoney") or race.get("prize") or 0
+    rdate_obj=race.get("_dateObj", race_date)
 
-    st.markdown(f"""<div class="page-hdr"><div>
-      <div class="page-title">Race {rnum} — {rname}</div>
-      <div class="page-sub">{rtrk}  ·  {rdist}m  ·  {rcls or "Open"}  ·  {rcond or "Cond TBC"}  ·  {rds}  ·  {len(runners)} runners</div>
-    </div><span class="pill pill-dark">{len(runners)} runners</span></div>""",unsafe_allow_html=True)
+    # ── Race header ──
+    live_ts=st.session_state.get("_live_prices_ts")
+    live_src=st.session_state.get("_live_source","")
+    live_age=""
+    if live_ts:
+        secs=(datetime.now()-live_ts).seconds
+        live_age=f"{secs//60}m ago" if secs>=60 else f"{secs}s ago"
 
-    col_rate,col_info=st.columns([2,5])
+    header_right=""
+    if live_ts:
+        header_right=(f'<div style="text-align:right">'
+                      f'<div class="live-price"><span class="live-dot"></span>Live odds · {live_src}</div>'
+                      f'<div style="font-family:\'DM Mono\',monospace;font-size:.66rem;color:var(--mist);margin-top:3px">Updated {live_age}</div></div>')
+    else:
+        header_right='<span class="pill pill-amber">SP only</span>'
+
+    st.markdown(f"""<div class="page-header">
+      <div>
+        <div class="page-eyebrow">{rtrk} · {rds}</div>
+        <div class="page-title">Race {rnum} — {rname}</div>
+        <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+          <span class="pill pill-ink">{len(runners)} runners</span>
+          <span class="pill pill-muted">{rdist}m</span>
+          {'<span class="pill pill-muted">'+rcls+'</span>' if rcls else ''}
+          {'<span class="pill pill-muted">'+rcond+'</span>' if rcond else ''}
+        </div>
+      </div>
+      {header_right}
+    </div>""",unsafe_allow_html=True)
+
+    # ── Controls bar ──
+    col_rate, col_odds, col_space = st.columns([2, 2, 6])
     with col_rate:
         run_ratings=st.button("⚡  Run Full Analysis",use_container_width=True)
-    with col_info:
-        st.markdown('<div style="padding-top:9px;font-size:.8rem;color:var(--text3)">Fetches past form, PF ratings & sectionals. Rates all runners across 11 factors.</div>',unsafe_allow_html=True)
+    with col_odds:
+        if st.button("🔄  Refresh Live Odds",use_container_width=True):
+            prices, source = refresh_live_prices(race, rdate_obj)
+            if prices:
+                st.success(f"✓ {len(prices)} prices from {source}")
+            else:
+                st.warning("No live prices returned — check Debug. SP fallback active.")
 
     if run_ratings:
         ratings_new={}; pf_new={}; secs_new={}; past_by_hid={}
         prog=st.progress(0); status=st.empty()
-
         status.markdown('<div class="alert alert-blue">Fetching past form...</div>',unsafe_allow_html=True)
         past_rows=fetch_form_for_race(race)
         for row in past_rows:
             hid=get_horse_id(row)
             if hid: past_by_hid.setdefault(hid,[]).append(row)
         prog.progress(0.25)
-
         status.markdown('<div class="alert alert-blue">Fetching PF AI ratings...</div>',unsafe_allow_html=True)
         pf_new=fetch_pf_ratings(race)
         prog.progress(0.45)
-
         status.markdown('<div class="alert alert-blue">Fetching sectionals...</div>',unsafe_allow_html=True)
         secs_new=fetch_sectionals(race)
         prog.progress(0.60)
-
         tempo_str=classify_tempo(runners)["tempo"]
         status.markdown('<div class="alert alert-blue">Computing ratings...</div>',unsafe_allow_html=True)
         for i,runner in enumerate(runners):
             hid=get_horse_id(runner)
             ratings_new[hid or f"_idx{i}"]=rate_runner(runner,past_by_hid.get(hid,[]),secs_new,tempo_str)
             prog.progress(0.60+0.40*(i+1)/len(runners))
-
         st.session_state.ratings=ratings_new
         st.session_state.pf_ratings=pf_new
         st.session_state.sectionals=secs_new
         st.session_state.past_form_by_horse=past_by_hid
         prog.empty(); status.empty()
-
         msgs=[f"✓ Rated {len(runners)} runners"]
         if past_by_hid: msgs.append(f"{len(past_by_hid)} with past form")
         if pf_new: msgs.append(f"{len(pf_new)} PF AI ratings")
         if secs_new: msgs.append(f"{len(secs_new)} sectionals")
-        if not pf_new: msgs.append("PF AI unavailable (subscription tier?)")
+        if not pf_new: msgs.append("PF AI unavailable — check subscription tier")
         st.success("  ·  ".join(msgs))
 
     ratings=st.session_state.ratings
@@ -1221,14 +1576,14 @@ with TAB_ANALYSIS:
     tempo_info=classify_tempo(runners)
     field_probs=normalise_field(runners,ratings,pf_ratings) if ratings else {}
 
-    # ── SPEEDMAP ──
-    st.markdown('<div class="section-hdr">Speedmap & Tempo</div>',unsafe_allow_html=True)
+    # ══ SPEEDMAP ══
+    st.markdown('<div class="section-hdr">Speedmap & Pace Dynamics</div>',unsafe_allow_html=True)
     tc={"HOT":"pill-red","GENUINE":"pill-amber","SOFT":"pill-blue","MODERATE":"pill-muted"}.get(tempo_info["tempo"],"pill-muted")
     st.markdown(
-        f'<div class="card-blue" style="display:flex;align-items:center;gap:16px;margin-bottom:14px">'
-        f'<span class="pill {tc}" style="font-size:.72rem;padding:4px 14px;flex-shrink:0">{tempo_info["tempo"]} PACE</span>'
-        f'<div><div style="font-size:.88rem;color:var(--text2);font-weight:600">{tempo_info["desc"]}</div>'
-        f'<div style="font-size:.77rem;color:var(--text3);margin-top:3px">Strategy: {tempo_info["strategy"]}</div></div>'
+        f'<div class="tempo-banner">'
+        f'<span class="pill {tc}" style="font-size:.72rem;padding:5px 14px;flex-shrink:0;font-weight:800">{tempo_info["tempo"]}</span>'
+        f'<div><div style="font-size:.9rem;color:var(--ink-3);font-weight:600">{tempo_info["desc"]}</div>'
+        f'<div style="font-size:.78rem;color:var(--steel);margin-top:3px">Strategy: {tempo_info["strategy"]}</div></div>'
         f'</div>',unsafe_allow_html=True)
 
     positions={1:[],2:[],3:[],4:[],5:[]}
@@ -1238,7 +1593,7 @@ with TAB_ANALYSIS:
     for pp,lbl in PACE_POSITIONS.items():
         horses=positions.get(pp,[])
         if not horses: continue
-        color=PACE_COLORS.get(lbl,"var(--text3)")
+        color=PACE_COLORS.get(lbl,"var(--mist)")
         st.markdown(
             f'<div class="smap-row">'
             f'<div class="smap-pos" style="color:{color}">{lbl}</div>'
@@ -1248,24 +1603,43 @@ with TAB_ANALYSIS:
 
     st.markdown('<hr>',unsafe_allow_html=True)
 
-    # ── MARKET FRAME ──
+    # ══ MARKET TABLE ══
     st.markdown('<div class="section-hdr">Market Frame</div>',unsafe_allow_html=True)
+
+    # Live price status banner
+    live_prices=st.session_state.get("_live_prices",{})
+    n_live=len(live_prices)
+    if n_live>0:
+        st.markdown(
+            f'<div class="alert alert-green" style="display:flex;align-items:center;gap:8px">'
+            f'<span class="live-dot" style="flex-shrink:0"></span>'
+            f'<strong>{n_live} live prices loaded</strong> from {live_src}  ·  Edge calculated against de-vigged live market'
+            f'</div>',unsafe_allow_html=True)
+    else:
+        st.markdown(
+            '<div class="alert alert-amber">⚠ No live prices — showing SP fallback. Click "Refresh Live Odds" for current prices.</div>',
+            unsafe_allow_html=True)
+
     if not mkt:
-        st.markdown('<div class="alert alert-amber">No SP prices yet — market frame unavailable. Prices are published closer to race time.</div>',unsafe_allow_html=True)
+        st.markdown('<div class="alert alert-amber">No prices available yet. Click "Refresh Live Odds" or wait for prices to be published.</div>',unsafe_allow_html=True)
     else:
         sample=next(iter(mkt.values()))
         overround=sample["overround"]
-        st.markdown(f'<div class="card-blue" style="font-size:.8rem;color:var(--blue-dark);margin-bottom:14px">'
-                    f'Book overround: <strong>{overround}%</strong>  —  True% = de-vigged probability  ·  Edge = Model% minus True%</div>',
-                    unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="card-blue" style="font-size:.8rem;color:var(--sap);margin-bottom:16px;display:flex;align-items:center;gap:20px">'
+            f'<div><span style="color:var(--mist)">Book overround</span> <strong style="color:var(--ink)">{overround}%</strong></div>'
+            f'<div><span style="color:var(--mist)">True%</span> = de-vigged probability</div>'
+            f'<div><span style="color:var(--mist)">Edge</span> = Model% minus True%</div>'
+            f'</div>',unsafe_allow_html=True)
 
-        sorted_by_sp=sorted(runners,key=lambda x:safe_float(x.get("priceSP") or x.get("fixedOddsWin") or 99))
+        sorted_by_sp=sorted(runners,key=lambda x: get_best_price(x) or 99)
         rows=""
         for rank,r in enumerate(sorted_by_sp):
             hid=get_horse_id(r); mf=mkt.get(hid)
             if not mf: continue
             name=get_runner_name(r)
             sp=mf["sp"]; raw=mf["raw_pct"]; true=mf["true_pct"]; fair=mf["fair_odds"]
+            src=mf.get("source","sp")
             mp=field_probs.get(hid,0)
             pfr=pf_ratings.get(hid,{}); pf_px=safe_float(pfr.get("pfAiPrice") or 0)
             diff=round(mp*100-true,1) if mp else None
@@ -1275,34 +1649,35 @@ with TAB_ANALYSIS:
                 cls="edge-pos" if diff>0 else "edge-neg" if diff<0 else "edge-neu"
                 edge_html=f'<span class="{cls}">{("+" if diff>=0 else "")}{diff}%</span>'
             bar_w=min(int(true*3.5),100)
-            bar_c="#16a34a" if is_val else "#3b82f6"
+            bar_c="#1a8c4e" if is_val else "#2255cc"
             bar_html=f'<div class="prob-bar" style="width:60px"><div class="prob-fill" style="width:{bar_w}%;background:{bar_c}"></div></div>'
             badges=""
-            if rank==0: badges+='<span class="mkt-fav">Fav</span>'
-            if is_val: badges+='<span class="mkt-val">Value</span>'
+            if rank==0: badges+='<span class="mkt-badge badge-fav">Fav</span>'
+            if is_val: badges+='<span class="mkt-badge badge-val">Value</span>'
+            if src=="live": badges+='<span class="mkt-badge badge-live">Live</span>'
             pf_cell=f"${pf_px:.2f}" if pf_px>1 else "—"
             mp_cell=f"{mp*100:.1f}%" if mp else "—"
             row_cls="val-row" if is_val else ("fav-row" if rank==0 else "")
             rows+=(f'<tr class="{row_cls}">'
-                   f'<td style="color:var(--text4);font-size:.72rem">{rank+1}</td>'
+                   f'<td style="color:var(--mist);font-size:.72rem">{rank+1}</td>'
                    f'<td><span class="mkt-horse">{name}</span>{badges}</td>'
-                   f'<td style="color:var(--blue);font-weight:700">${sp:.2f}</td>'
-                   f'<td style="color:var(--text3)">{raw}%</td>'
+                   f'<td style="color:var(--sap);font-weight:700">${sp:.2f}</td>'
+                   f'<td style="color:var(--steel)">{raw}%</td>'
                    f'<td><div style="display:flex;align-items:center;gap:8px"><span style="font-weight:600">{true}%</span>{bar_html}</div></td>'
-                   f'<td style="color:var(--text2)">${fair:.2f}</td>'
-                   f'<td style="color:var(--blue)">{pf_cell}</td>'
-                   f'<td style="color:var(--blue-mid)">{mp_cell}</td>'
+                   f'<td style="color:var(--ink-3)">${fair:.2f}</td>'
+                   f'<td style="color:var(--sap)">{pf_cell}</td>'
+                   f'<td style="color:var(--sap-mid)">{mp_cell}</td>'
                    f'<td>{edge_html}</td></tr>')
 
         st.markdown(
-            f'<div class="card" style="padding:0;overflow:hidden"><table class="mkt-table">'
-            f'<thead><tr><th>#</th><th>Horse</th><th>SP</th><th>Raw%</th>'
+            f'<div class="mkt-wrap"><table class="mkt-table">'
+            f'<thead><tr><th>#</th><th>Horse</th><th>Price</th><th>Raw%</th>'
             f'<th>True%</th><th>Fair Odds</th><th>PF AI</th><th>Model%</th><th>Edge</th>'
             f'</tr></thead><tbody>{rows}</tbody></table></div>',unsafe_allow_html=True)
 
     st.markdown('<hr>',unsafe_allow_html=True)
 
-    # ── RUNNER CARDS ──
+    # ══ RUNNER CARDS ══
     st.markdown('<div class="section-hdr">Runner-by-Runner Analysis</div>',unsafe_allow_html=True)
 
     if ratings:
@@ -1313,20 +1688,25 @@ with TAB_ANALYSIS:
             rtg=ratings.get(hid,{})
             mp=field_probs.get(hid,0)
             mf=mkt.get(hid,{})
-            price=safe_float(r.get("priceSP") or r.get("fixedOddsWin") or 0)
+            price=get_best_price(r)
             diff=round(mp*100-mf.get("true_pct",0),1) if mp and mf else None
-            summary_rows.append({"Horse":name,"Barrier":r.get("barrierNumber") or r.get("barrier") or "?",
-                "Rating":f"{rtg.get('pct',0):.1f}%","Composite":f"{rtg.get('composite',0):.1f}",
-                "Model%":f"{mp*100:.1f}%" if mp else "—","SP":f"${price:.2f}" if price>0 else "—",
+            summary_rows.append({
+                "Horse":name,
+                "Barrier":r.get("barrierNumber") or r.get("barrier") or "?",
+                "Rating":f"{rtg.get('pct',0):.1f}%",
+                "Composite":f"{rtg.get('composite',0):.1f}",
+                "Model%":f"{mp*100:.1f}%" if mp else "—",
+                "Price":f"${price:.2f}" if price>0 else "—",
                 "Edge":f"+{diff}%" if diff is not None and diff>0 else (f"{diff}%" if diff is not None else "—"),
-                "Bet":"✓" if (diff is not None and diff>(st.session_state.min_edge/100) and rtg.get("pct",0)>=st.session_state.min_rating) else "",})
+                "Bet":"✓" if (diff is not None and diff>(st.session_state.min_edge/100) and rtg.get("pct",0)>=st.session_state.min_rating) else "",
+            })
         summary_rows.sort(key=lambda x:float(x["Composite"].replace("—","0")),reverse=True)
         st.dataframe(pd.DataFrame(summary_rows),use_container_width=True,hide_index=True)
-        st.markdown('<div style="margin-bottom:20px"></div>',unsafe_allow_html=True)
+        st.markdown('<div style="margin-bottom:22px"></div>',unsafe_allow_html=True)
 
     def sort_key(r):
         hid=get_horse_id(r)
-        return field_probs.get(hid,0) if field_probs else -safe_float(r.get("priceSP") or 99)
+        return field_probs.get(hid,0) if field_probs else -safe_float(get_best_price(r) or 99)
 
     for rank,runner in enumerate(sorted(runners,key=sort_key,reverse=True),1):
         hid=get_horse_id(runner)
@@ -1337,7 +1717,8 @@ with TAB_ANALYSIS:
         weight=runner.get("weightTotal") or runner.get("weightCarried") or runner.get("handicapWeight") or "—"
         age=runner.get("age") or runner.get("horseAge") or ""
         sex=runner.get("sex") or runner.get("horseSex") or ""
-        price=safe_float(runner.get("priceSP") or runner.get("fixedOddsWin") or runner.get("price") or 0)
+        price=get_best_price(runner)
+        p_source=price_source_label(runner)
         pace_lbl=PACE_POSITIONS.get(safe_int(runner.get("pacePosition",3)),"Midfield")
         rating=ratings.get(hid)
         pfr=pf_ratings.get(hid,{})
@@ -1356,34 +1737,37 @@ with TAB_ANALYSIS:
                 st.session_state.min_rating,st.session_state.min_edge,st.session_state.min_tj_a2e)
 
         sp_str=f"${price:.2f}" if price>0 else "N/A"
+        src_str=f" ({'live' if p_source=='live' else 'SP'})" if price>0 else ""
         mp_str=f"  ·  Model {round(mp*100,1)}%" if mp else ""
         mkt_str=f"  ·  Mkt {mf.get('true_pct','?')}%" if mf else ""
         edge_str=f"  ·  Edge {'+' if verdict and verdict['edge_pct']>=0 else ''}{verdict['edge_pct']}%" if verdict else ""
-        bet_flag="  ✓ BET" if (verdict and verdict["bet"]) else ""
-        exp_label=f"#{rank}  {name}   B{barrier}   {sp_str}{mp_str}{mkt_str}{edge_str}{bet_flag}"
+        bet_flag="  ★ BET" if (verdict and verdict["bet"]) else ""
+        exp_label=f"#{rank}  {name}   B{barrier}   {sp_str}{src_str}{mp_str}{mkt_str}{edge_str}{bet_flag}"
         is_expanded=rank<=2 or (verdict is not None and verdict["bet"])
 
-        with st.expander(exp_label,expanded=is_expanded):
-            col_left,col_right=st.columns([3,2],gap="medium")
+        with st.expander(exp_label, expanded=is_expanded):
+            col_left, col_right = st.columns([3,2], gap="medium")
 
             with col_left:
                 pace_pill={"Leader":"pill-red","On Pace":"pill-amber","Midfield":"pill-blue","Back":"pill-muted","Rear":"pill-muted"}.get(pace_lbl,"pill-muted")
-                meta_line='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">'
+                meta_line='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px">'
                 meta_line+=f'<span class="pill pill-muted">B{barrier}</span>'
                 meta_line+=f'<span class="pill {pace_pill}">{pace_lbl}</span>'
                 if weight and str(weight)!="—": meta_line+=f'<span class="pill pill-muted">{weight}kg</span>'
                 if age: meta_line+=f'<span class="pill pill-muted">{age}yo</span>'
                 if sex: meta_line+=f'<span class="pill pill-muted">{sex}</span>'
+                if p_source=="live": meta_line+=f'<span class="pill pill-green">Live ${price:.2f}</span>'
                 meta_line+="</div>"
-                st.markdown(meta_line,unsafe_allow_html=True)
+                st.markdown(meta_line, unsafe_allow_html=True)
 
                 st.markdown(
-                    f'<div style="font-size:.82rem;color:var(--text2);line-height:2.1;margin-bottom:14px">'
-                    f'<span style="color:var(--text4);font-size:.65rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700">Jockey</span>'
-                    f'&nbsp;&nbsp;<span style="font-weight:600">{jockey}</span><br>'
-                    f'<span style="color:var(--text4);font-size:.65rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700">Trainer</span>'
-                    f'&nbsp;&nbsp;<span style="font-weight:600">{trainer}</span></div>',
-                    unsafe_allow_html=True)
+                    f'<div style="display:grid;grid-template-columns:auto auto;gap:4px 20px;'
+                    f'font-size:.84rem;color:var(--ink-3);margin-bottom:16px;line-height:2">'
+                    f'<span style="color:var(--mist);font-size:.65rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700">Jockey</span>'
+                    f'<span style="font-weight:600">{jockey}</span>'
+                    f'<span style="color:var(--mist);font-size:.65rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700">Trainer</span>'
+                    f'<span style="font-weight:600">{trainer}</span>'
+                    f'</div>', unsafe_allow_html=True)
 
                 cw=safe_float(runner.get("winPct",0)); cp=safe_float(runner.get("placePct",0))
                 tr2=runner.get("trackRecord") or {}
@@ -1396,129 +1780,131 @@ with TAB_ANALYSIS:
                 dsr=round(dw/ds2*100,1) if ds2>0 else 0; dplr=round((dw+ds3+dt)/ds2*100,1) if ds2>0 else 0
 
                 st.markdown(
-                    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">'
-                    +f'<div class="card-sm"><div class="dl-label">Career Win%</div><div class="dl-value {"green" if cw>20 else ""}">{cw:.1f}%</div></div>'
+                    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">'
+                    +f'<div class="card-sm"><div class="dl-label">Career Win%</div><div class="dl-value {"c-green" if cw>20 else ""}">{cw:.1f}%</div></div>'
                     +f'<div class="card-sm"><div class="dl-label">Career Place%</div><div class="dl-value">{cp:.1f}%</div></div>'
-                    +f'<div class="card-sm"><div class="dl-label">Track W-P-T/{int(ts)}</div><div class="dl-value {"green" if tsr>20 else ""}">{tsr}%W {tplr}%P</div></div>'
-                    +f'<div class="card-sm"><div class="dl-label">Distance W-P-T/{int(ds2)}</div><div class="dl-value {"green" if dsr>20 else ""}">{dsr}%W {dplr}%P</div></div>'
-                    +'</div>',unsafe_allow_html=True)
+                    +f'<div class="card-sm"><div class="dl-label">Track {int(ts)} starts</div><div class="dl-value {"c-green" if tsr>20 else ""}">{tsr}%W {tplr}%P</div></div>'
+                    +f'<div class="card-sm"><div class="dl-label">Distance {int(ds2)} starts</div><div class="dl-value {"c-green" if dsr>20 else ""}">{dsr}%W {dplr}%P</div></div>'
+                    +'</div>', unsafe_allow_html=True)
 
                 if tj_runs>=5:
-                    a2e_col="green" if tj_a2e>=1.1 else "red" if tj_a2e<0.8 else ""
+                    a2e_col="c-green" if tj_a2e>=1.1 else "c-red" if tj_a2e<0.8 else ""
                     st.markdown(
-                        f'<div class="card-sm" style="margin-bottom:14px">'
-                        f'<div class="dl-label" style="margin-bottom:7px">J+T Combination — {int(tj_runs)} runs</div>'
-                        f'<div style="display:flex;gap:20px;font-family:\'JetBrains Mono\',monospace;font-size:.84rem">'
+                        f'<div class="card-sm" style="margin-bottom:16px">'
+                        f'<div class="dl-label" style="margin-bottom:8px">J+T Combination — {int(tj_runs)} runs</div>'
+                        f'<div style="display:flex;gap:24px;font-family:\'DM Mono\',monospace;font-size:.84rem">'
                         f'<div>SR <span style="font-weight:700">{tj_sr:.1f}%</span></div>'
                         f'<div>A2E <span class="dl-value {a2e_col}" style="font-size:.9rem">{tj_a2e:.2f}</span></div>'
-                        f'</div></div>',unsafe_allow_html=True)
+                        f'</div></div>', unsafe_allow_html=True)
 
                 pf_px=safe_float(pfr.get("pfAiPrice") or pfr.get("modelPrice") or 0)
                 pf_rank=pfr.get("pfAiRank") or pfr.get("rank")
                 if pf_px>1 or pf_rank:
                     pf_val=price>0 and pf_px>price
                     st.markdown(
-                        f'<div class="card-blue" style="margin-bottom:14px">'
-                        f'<div class="dl-label" style="margin-bottom:8px;color:var(--blue-dark)">PF AI Model</div>'
-                        f'<div style="display:flex;gap:20px;flex-wrap:wrap">'
-                        +(f'<div><div class="dl-label">AI Price</div><div class="dl-value blue" style="font-size:1.15rem">${pf_px:.2f}</div></div>' if pf_px>1 else "")
-                        +(f'<div><div class="dl-label">AI Rank</div><div class="dl-value blue">#{pf_rank}</div></div>' if pf_rank else "")
+                        f'<div class="card-blue" style="margin-bottom:16px">'
+                        f'<div class="dl-label" style="margin-bottom:10px;color:var(--sap)">PF AI Model</div>'
+                        f'<div style="display:flex;gap:24px;flex-wrap:wrap">'
+                        +(f'<div><div class="dl-label">AI Price</div><div class="dl-value c-blue" style="font-size:1.15rem">${pf_px:.2f}</div></div>' if pf_px>1 else "")
+                        +(f'<div><div class="dl-label">AI Rank</div><div class="dl-value c-blue">#{pf_rank}</div></div>' if pf_rank else "")
                         +f'</div>'
-                        +(f'<div style="font-size:.72rem;color:var(--green);margin-top:6px;font-weight:600">AI price > SP — value signal</div>' if pf_val else "")
-                        +f'</div>',unsafe_allow_html=True)
+                        +(f'<div style="font-size:.72rem;color:var(--go);margin-top:8px;font-weight:600">AI price > market — value signal</div>' if pf_val else "")
+                        +f'</div>', unsafe_allow_html=True)
 
                 sec_rtg=safe_float(sec_d.get("sectionalRating") or sec_d.get("closing600Rating") or 0)
                 sec_600=safe_float(sec_d.get("averageClosing600") or sec_d.get("avg600") or 0)
                 if sec_rtg>0 or sec_600>0:
                     st.markdown(
-                        f'<div class="card-sm" style="margin-bottom:14px">'
-                        f'<div class="dl-label" style="margin-bottom:7px">Sectionals</div>'
-                        f'<div style="display:flex;gap:20px;font-family:\'JetBrains Mono\',monospace;font-size:.84rem">'
-                        +(f'<div>Rating <span style="color:var(--blue);font-weight:700">{sec_rtg:.1f}</span></div>' if sec_rtg>0 else "")
-                        +(f'<div>Avg 600m <span style="color:var(--blue);font-weight:700">{sec_600:.2f}s</span></div>' if sec_600>0 else "")
-                        +f'</div></div>',unsafe_allow_html=True)
+                        f'<div class="card-sm" style="margin-bottom:16px">'
+                        f'<div class="dl-label" style="margin-bottom:8px">Sectionals</div>'
+                        f'<div style="display:flex;gap:24px;font-family:\'DM Mono\',monospace;font-size:.84rem">'
+                        +(f'<div>Rating <span style="color:var(--sap);font-weight:700">{sec_rtg:.1f}</span></div>' if sec_rtg>0 else "")
+                        +(f'<div>Avg 600m <span style="color:var(--sap);font-weight:700">{sec_600:.2f}s</span></div>' if sec_600>0 else "")
+                        +f'</div></div>', unsafe_allow_html=True)
 
                 if rating:
                     r_pct=rating["pct"]
-                    r_col="var(--green)" if r_pct>=65 else "var(--amber)" if r_pct>=45 else "var(--red)"
+                    r_col="var(--go)" if r_pct>=65 else "var(--warn)" if r_pct>=45 else "var(--stop)"
                     st.markdown(
-                        f'<div class="dl-label" style="margin-bottom:6px">Composite Rating</div>'
+                        f'<div class="dl-label" style="margin-bottom:7px">Composite Rating</div>'
                         f'<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:8px">'
-                        f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:1.9rem;font-weight:700;color:{r_col}">{rating["composite"]}</span>'
-                        f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:.72rem;color:var(--text4)">/ {MAX_SCORE}  ({r_pct}%)</span>'
+                        f'<span style="font-family:\'DM Mono\',monospace;font-size:2rem;font-weight:700;color:{r_col}">{rating["composite"]}</span>'
+                        f'<span style="font-family:\'DM Mono\',monospace;font-size:.72rem;color:var(--mist)">/ {MAX_SCORE}  ({r_pct}%)</span>'
                         f'</div>'
-                        f'<div class="prob-bar" style="margin-bottom:16px"><div class="prob-fill" style="width:{r_pct}%;background:{r_col}"></div></div>',
+                        f'<div class="prob-bar" style="margin-bottom:18px"><div class="prob-fill" style="width:{r_pct}%;background:{r_col}"></div></div>',
                         unsafe_allow_html=True)
                     for fkey,fmax in FACTOR_WEIGHTS.items():
                         val=rating.get(fkey,0); pct=int(val/fmax*100) if fmax else 0
-                        bc="#16a34a" if pct>=65 else "#3b82f6" if pct>=35 else "#dc2626"
+                        bc="#1a8c4e" if pct>=65 else "#2255cc" if pct>=35 else "#c0392b"
                         st.markdown(
-                            f'<div class="comp-row">'
-                            f'<span class="comp-name">{FACTOR_LBLS[fkey]}</span>'
-                            f'<div class="comp-bar"><div class="comp-fill" style="width:{pct}%;background:{bc}"></div></div>'
-                            f'<span class="comp-score">{val:.1f}/{fmax}</span></div>',
+                            f'<div class="factor-row">'
+                            f'<span class="factor-name">{FACTOR_LBLS[fkey]}</span>'
+                            f'<div class="factor-bar"><div class="factor-fill" style="width:{pct}%;background:{bc}"></div></div>'
+                            f'<span class="factor-score">{val:.1f}/{fmax}</span></div>',
                             unsafe_allow_html=True)
 
                 if past:
-                    st.markdown('<div class="dl-label" style="margin-top:16px;margin-bottom:8px">Recent Form</div>',unsafe_allow_html=True)
+                    st.markdown('<div class="dl-label" style="margin-top:18px;margin-bottom:10px">Recent Form</div>',unsafe_allow_html=True)
                     form_html='<div style="display:flex;gap:6px;flex-wrap:wrap">'
                     for run in past[:6]:
                         pos=safe_int(run.get("finishingPosition",0))
                         trk=(run.get("meetingName") or "")[:3].upper()
                         dst=safe_int(run.get("raceDistance") or 0)
-                        box_c="#16a34a" if pos==1 else "#3b82f6" if pos<=3 else "#6b7280" if pos<=5 else "#dc2626"
-                        form_html+=(f'<div style="text-align:center;background:var(--surface2);border:1px solid var(--border);'
-                                    f'border-radius:var(--r);padding:6px 10px;min-width:42px">'
-                                    f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:1.1rem;font-weight:700;color:{box_c}">{pos}</div>'
-                                    f'<div style="font-size:.58rem;color:var(--text4)">{trk}</div>'
-                                    f'<div style="font-size:.58rem;color:var(--text4)">{dst}m</div></div>')
+                        box_c="#1a8c4e" if pos==1 else "#2255cc" if pos<=3 else "#6b7280" if pos<=5 else "#c0392b"
+                        form_html+=(f'<div style="text-align:center;background:var(--ghost);border:1px solid var(--silver);'
+                                    f'border-radius:var(--r);padding:7px 12px;min-width:44px">'
+                                    f'<div style="font-family:\'DM Mono\',monospace;font-size:1.1rem;font-weight:700;color:{box_c}">{pos}</div>'
+                                    f'<div style="font-size:.58rem;color:var(--mist);margin-top:2px">{trk}</div>'
+                                    f'<div style="font-size:.58rem;color:var(--mist)">{dst}m</div></div>')
                     form_html+='</div>'
-                    st.markdown(form_html,unsafe_allow_html=True)
+                    st.markdown(form_html, unsafe_allow_html=True)
 
                 nk=f"{hid}_{rid}"
                 note=st.text_area("Notes",value=st.session_state.notes.get(nk,""),
-                    key=f"note_{hid}_{rank}",height=56,placeholder="Add notes, intel...")
+                    key=f"note_{hid}_{rank}",height=56,placeholder="Add race-day notes...")
                 st.session_state.notes[nk]=note
 
             with col_right:
                 if not rating and not mf:
                     st.markdown('<div class="alert alert-blue">Click "Run Full Analysis" to compute ratings.</div>',unsafe_allow_html=True)
                 elif price<=1:
-                    st.markdown('<div class="alert alert-amber">No SP price yet.</div>',unsafe_allow_html=True)
+                    st.markdown('<div class="alert alert-amber">No price available yet.</div>',unsafe_allow_html=True)
                 else:
                     if mf and mp:
                         tp=mf["true_pct"]; rp=mf["raw_pct"]; fair=mf["fair_odds"]; mp_p=round(mp*100,1)
-                        diff=round(mp_p-tp,1); dc="var(--green)" if diff>0 else "var(--red)"
+                        diff=round(mp_p-tp,1); dc="var(--go)" if diff>0 else "var(--stop)"
+                        src_badge=f'<span class="mkt-badge badge-live" style="font-size:.6rem">{"LIVE" if mf.get("source")=="live" else "SP"}</span>'
                         st.markdown(
-                            f'<div class="card" style="margin-bottom:14px">'
-                            f'<div class="dl-label" style="margin-bottom:14px;font-weight:700">Probability Breakdown</div>'
+                            f'<div class="card" style="margin-bottom:16px">'
+                            f'<div class="dl-label" style="margin-bottom:16px;font-weight:700">Probability Breakdown {src_badge}</div>'
                             f'<div class="prob-grid">'
-                            f'<div class="prob-cell-blue"><div class="dl-label">SP Odds</div><div class="dl-value blue" style="font-size:1.2rem">${price:.2f}</div></div>'
+                            f'<div class="prob-cell-blue"><div class="dl-label">Price</div><div class="dl-value c-blue" style="font-size:1.2rem">${price:.2f}</div></div>'
                             f'<div class="prob-cell-blue"><div class="dl-label">Fair Odds</div><div class="dl-value" style="font-size:1.2rem">${fair:.2f}</div></div>'
-                            f'<div class="prob-cell"><div class="dl-label">Raw Mkt%</div><div class="dl-value" style="font-size:.95rem;color:var(--text3)">{rp}%</div></div>'
+                            f'<div class="prob-cell"><div class="dl-label">Raw Mkt%</div><div class="dl-value" style="font-size:.95rem;color:var(--steel)">{rp}%</div></div>'
                             f'<div class="prob-cell"><div class="dl-label">True Mkt%</div><div class="dl-value" style="font-size:.95rem">{tp}%</div></div>'
-                            f'<div class="prob-cell-blue"><div class="dl-label">Model%</div><div class="dl-value blue" style="font-size:.95rem;font-weight:700">{mp_p}%</div></div>'
-                            f'<div class="prob-cell-blue"><div class="dl-label">Edge</div><div style="font-family:\'JetBrains Mono\',monospace;font-size:.95rem;font-weight:700;color:{dc}">{"+" if diff>=0 else ""}{diff}%</div></div>'
+                            f'<div class="prob-cell-blue"><div class="dl-label">Model%</div><div class="dl-value c-blue" style="font-size:.95rem;font-weight:700">{mp_p}%</div></div>'
+                            f'<div class="prob-cell-blue"><div class="dl-label">Edge</div><div style="font-family:\'DM Mono\',monospace;font-size:.95rem;font-weight:700;color:{dc}">{"+" if diff>=0 else ""}{diff}%</div></div>'
                             f'</div>'
-                            f'<div style="margin-top:10px;font-size:.68rem;color:var(--text4)">Book: {mf["overround"]}%  ·  EV/unit: {verdict["ev_pct"] if verdict else "—"}%</div>'
-                            f'</div>',unsafe_allow_html=True)
+                            f'<div style="margin-top:12px;font-size:.68rem;color:var(--mist)">Book: {mf["overround"]}%  ·  EV/unit: {verdict["ev_pct"] if verdict else "—"}%</div>'
+                            f'</div>', unsafe_allow_html=True)
 
                     if verdict:
                         g=verdict["gates"]
                         def gp(ok): return ("pill-green","Pass") if ok else ("pill-red","Fail")
                         g1c,g1t=gp(g["edge"]); g2c,g2t=gp(g["rating"]); g3c,g3t=gp(g["tj"]); g4c,g4t=gp(g["odds"])
-                        gate_detail={"edge":f"Edge {'+' if verdict['edge_pct']>=0 else ''}{verdict['edge_pct']}% vs min {st.session_state.min_edge}%",
+                        gate_detail={
+                            "edge":f"Edge {'+' if verdict['edge_pct']>=0 else ''}{verdict['edge_pct']}% vs min {st.session_state.min_edge}%",
                             "rating":f"Rating {rating['pct'] if rating else '?'}% vs min {st.session_state.min_rating}%",
                             "tj":f"A2E {tj_a2e:.2f} vs min {st.session_state.min_tj_a2e}",
-                            "odds":f"SP ${price:.2f}  range ${st.session_state.min_odds}–${st.session_state.max_odds}"}
+                            "odds":f"${price:.2f}  range ${st.session_state.min_odds}–${st.session_state.max_odds}"}
                         st.markdown(
-                            f'<div class="card" style="margin-bottom:14px">'
-                            f'<div class="dl-label" style="margin-bottom:12px;font-weight:700">Value Gates</div>'
-                            +"".join([f'<div class="gate-row"><span class="pill {pc}" style="width:42px;justify-content:center;flex-shrink:0">{pt}</span>'
+                            f'<div class="card" style="margin-bottom:16px">'
+                            f'<div class="dl-label" style="margin-bottom:14px;font-weight:700">Value Gates</div>'
+                            +"".join([f'<div class="gate-row"><span class="pill {pc}" style="width:44px;justify-content:center;flex-shrink:0;font-size:.6rem">{pt}</span>'
                                       f'<span class="gate-lbl">{lbl}</span><span class="gate-detail">{gate_detail[gk]}</span></div>'
-                                      for gk,(pc,pt),lbl in [("edge",(g1c,g1t),"Edge"),("rating",(g2c,g2t),"Min rating"),
-                                                             ("tj",(g3c,g3t),"J+T A2E"),("odds",(g4c,g4t),"SP range")]])
-                            +f'</div>',unsafe_allow_html=True)
+                                      for gk,(pc,pt),lbl in [("edge",(g1c,g1t),"Edge"),("rating",(g2c,g2t),"Rating"),
+                                                             ("tj",(g3c,g3t),"J+T A2E"),("odds",(g4c,g4t),"Odds range")]])
+                            +f'</div>', unsafe_allow_html=True)
 
                         if verdict["bet"]:
                             rec=compute_stake(st.session_state.bank,mp,price,st.session_state.staking_method,
@@ -1527,16 +1913,16 @@ with TAB_ANALYSIS:
                             ev_c="#4ade80" if rec["ev"]>=0 else "#f87171"
                             st.markdown(
                                 f'<div class="stake-card">'
-                                f'<div class="stake-label">{st.session_state.staking_method}</div>'
+                                f'<div class="stake-lbl">{st.session_state.staking_method}</div>'
                                 f'<div class="stake-amount">${rec["stake"]:.2f}</div>'
                                 f'<div class="stake-detail" style="color:{ev_c}">EV ${rec["ev"]:+.2f}  ·  {rec["ev_pct"]:+.1f}%  ·  {rec["pct_bank"]}% of bank</div>'
-                                f'<div class="stake-detail">Break-even: {rec["roi_required"]:.1f}% ROI needed</div>'
-                                f'</div>',unsafe_allow_html=True)
+                                f'<div class="stake-detail">Break-even: {rec["roi_required"]:.1f}% ROI required</div>'
+                                f'</div>', unsafe_allow_html=True)
                             st.markdown(
-                                '<div class="bet-banner"><div class="bet-banner-title">✓ BET — All four gates pass</div>'
-                                '<div class="bet-banner-sub">Positive edge vs de-vigged market probability</div></div>',
+                                '<div class="bet-banner"><div class="bet-banner-title">★ BET — All four gates pass</div>'
+                                '<div class="bet-banner-sub">Positive edge versus de-vigged market probability</div></div>',
                                 unsafe_allow_html=True)
-                            if st.button(f"📋  Log bet — {name}",key=f"log_{hid}_{rank}"):
+                            if st.button(f"📋  Log — {name}",key=f"log_{hid}_{rank}"):
                                 add_bet(name,f"{rtrk} R{rnum}",rec["stake"],price,verdict["edge_pct"],verdict["model_pct"])
                                 st.success(f"✓ Logged: {name} ${rec['stake']:.2f} @ ${price}")
                         else:
@@ -1544,45 +1930,45 @@ with TAB_ANALYSIS:
 
 
 # ════════════════════════════════════════════════════════════════
-# TAB 3: STAKING & BETS
+# TAB 3 — STAKING & BETS
 # ════════════════════════════════════════════════════════════════
 with TAB_STAKING:
-    st.markdown("""<div class="page-hdr"><div>
+    st.markdown("""<div class="page-header"><div>
+      <div class="page-eyebrow">Discipline & Records</div>
       <div class="page-title">Staking & Bet Log</div>
-      <div class="page-sub">Methods, discipline rules, bet management</div>
     </div></div>""",unsafe_allow_html=True)
 
     st.markdown('<div class="section-hdr">Staking Methods</div>',unsafe_allow_html=True)
     c1,c2,c3=st.columns(3)
     for col,title,pill_c,body in [
-        (c1,"Kelly Criterion","pill-blue","Mathematically optimal. Stake proportional to edge.<br><br><code>f* = (bp − q) / b</code><br><br><strong>Quarter Kelly (recommended)</strong> retains ~75% of growth rate while dramatically reducing variance."),
-        (c2,"Flat Percentage","pill-muted","Fixed % of current bank per bet. Naturally scales down in losing runs, up in winning runs.<br><br>Simpler than Kelly. Ignores edge size."),
-        (c3,"Level Stakes","pill-muted","Fixed dollar amount per bet. Easiest for tracking ROI.<br><br>Does not protect bank during drawdowns. Best for evaluating model performance."),
+        (c1,"Kelly Criterion","pill-blue","Mathematically optimal — stake is proportional to edge.<br><br><code>f* = (bp − q) / b</code><br><br><strong>Quarter Kelly (recommended)</strong> retains ~75% of theoretical growth rate while dramatically reducing variance."),
+        (c2,"Flat Percentage","pill-muted","Fixed % of current bank per bet. Naturally scales down in losing runs and up in winning runs.<br><br>Simpler than Kelly. Does not account for edge size."),
+        (c3,"Level Stakes","pill-muted","Fixed dollar amount per bet. Easiest for tracking ROI cleanly.<br><br>Does not protect bank in drawdowns. Best for evaluating model performance in isolation."),
     ]:
-        col.markdown(f'<div class="card"><div style="margin-bottom:10px"><span class="pill {pill_c}">{title}</span></div><div style="font-size:.8rem;color:var(--text2);line-height:1.9">{body}</div></div>',unsafe_allow_html=True)
+        col.markdown(f'<div class="card"><div style="margin-bottom:12px"><span class="pill {pill_c}">{title}</span></div><div style="font-size:.81rem;color:var(--ink-3);line-height:1.9">{body}</div></div>',unsafe_allow_html=True)
 
     bpct=st.session_state.bank/st.session_state.starting_bank*100 if st.session_state.starting_bank else 100
     if bpct<70:
-        st.markdown(f'<div class="alert alert-red">⚠ Stop-loss — bank at {bpct:.1f}% of start. Halve all stakes until bank recovers above 85%.</div>',unsafe_allow_html=True)
+        st.markdown(f'<div class="alert alert-red">⚠ Stop-loss triggered — bank at {bpct:.1f}% of starting balance. Halve all stakes until bank recovers above 85%.</div>',unsafe_allow_html=True)
     elif bpct<85:
-        st.markdown(f'<div class="alert alert-amber">Bank at {bpct:.1f}% — consider reducing stakes.</div>',unsafe_allow_html=True)
+        st.markdown(f'<div class="alert alert-amber">Bank at {bpct:.1f}% of start — consider reducing stake sizes.</div>',unsafe_allow_html=True)
 
     st.markdown('<div class="section-hdr">Bet Log</div>',unsafe_allow_html=True)
     log=st.session_state.bet_log
     if not log:
-        st.markdown('<div class="alert alert-blue">No bets logged yet. Qualifying bets appear here after clicking "Log bet" in the Analysis tab.</div>',unsafe_allow_html=True)
+        st.markdown('<div class="alert alert-blue">No bets logged yet. Qualifying bets appear here after clicking "Log" in the Analysis tab.</div>',unsafe_allow_html=True)
     else:
         settled=[b for b in log if b["result"]!="Pending"]; pending=[b for b in log if b["result"]=="Pending"]
         if settled:
             s_pl=sum(b["pl"] for b in settled); s_stk=sum(b["stake"] for b in settled)
             s_roi=round(s_pl/s_stk*100,1) if s_stk else 0; s_wins=sum(1 for b in settled if b["result"]=="Won")
-            pl_c="var(--green)" if s_pl>=0 else "var(--red)"
-            st.markdown(f'<div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">'
-                        f'<span style="padding:4px 10px;border-radius:99px;background:var(--surface2);border:1px solid var(--border);font-size:.72rem">{len(settled)} settled</span>'
-                        f'<span style="padding:4px 10px;border-radius:99px;background:var(--surface2);border:1px solid var(--border);font-size:.72rem">{len(pending)} pending</span>'
-                        f'<span style="padding:4px 10px;border-radius:99px;background:var(--surface2);border:1px solid var(--border);font-size:.72rem;color:{pl_c}">P/L ${s_pl:+.2f}</span>'
-                        f'<span style="padding:4px 10px;border-radius:99px;background:var(--surface2);border:1px solid var(--border);font-size:.72rem">ROI {s_roi:+.1f}%</span>'
-                        f'<span style="padding:4px 10px;border-radius:99px;background:var(--surface2);border:1px solid var(--border);font-size:.72rem">{s_wins}/{len(settled)} wins</span>'
+            pl_c="var(--go)" if s_pl>=0 else "var(--stop)"
+            st.markdown(f'<div style="display:flex;gap:10px;margin-bottom:18px;flex-wrap:wrap">'
+                        f'<span style="padding:4px 12px;border-radius:99px;background:var(--ghost);border:1px solid var(--silver);font-size:.72rem">{len(settled)} settled</span>'
+                        f'<span style="padding:4px 12px;border-radius:99px;background:var(--ghost);border:1px solid var(--silver);font-size:.72rem">{len(pending)} pending</span>'
+                        f'<span style="padding:4px 12px;border-radius:99px;background:var(--ghost);border:1px solid var(--silver);font-size:.72rem;color:{pl_c}">P/L ${s_pl:+.2f}</span>'
+                        f'<span style="padding:4px 12px;border-radius:99px;background:var(--ghost);border:1px solid var(--silver);font-size:.72rem">ROI {s_roi:+.1f}%</span>'
+                        f'<span style="padding:4px 12px;border-radius:99px;background:var(--ghost);border:1px solid var(--silver);font-size:.72rem">{s_wins}/{len(settled)} wins</span>'
                         f'</div>',unsafe_allow_html=True)
 
         df_log=pd.DataFrame(log)
@@ -1597,9 +1983,9 @@ with TAB_STAKING:
             for idx,bet in pending_idx:
                 c1,c2,c3,c4=st.columns([5,1,1,1])
                 with c1:
-                    st.markdown(f'<div style="padding:9px 0;font-family:\'JetBrains Mono\',monospace;font-size:.8rem">'
-                                f'<span style="color:var(--blue);font-weight:700">{bet["horse"]}</span>&nbsp;&nbsp;'
-                                f'<span style="color:var(--text3)">${bet["stake"]:.2f} @ {bet["odds"]}</span></div>',unsafe_allow_html=True)
+                    st.markdown(f'<div style="padding:10px 0;font-family:\'DM Mono\',monospace;font-size:.8rem">'
+                                f'<span style="color:var(--sap);font-weight:700">{bet["horse"]}</span>&nbsp;&nbsp;'
+                                f'<span style="color:var(--steel)">${bet["stake"]:.2f} @ {bet["odds"]}</span></div>',unsafe_allow_html=True)
                 with c2:
                     if st.button("Won",key=f"won_{idx}"): settle(idx,"Won"); st.rerun()
                 with c3:
@@ -1612,12 +1998,12 @@ with TAB_STAKING:
 
 
 # ════════════════════════════════════════════════════════════════
-# TAB 4: BANKROLL
+# TAB 4 — BANKROLL
 # ════════════════════════════════════════════════════════════════
 with TAB_BANKROLL:
-    st.markdown("""<div class="page-hdr"><div>
-      <div class="page-title">Bankroll Performance</div>
-      <div class="page-sub">P/L tracking, ROI, drawdown monitoring</div>
+    st.markdown("""<div class="page-header"><div>
+      <div class="page-eyebrow">Performance Tracking</div>
+      <div class="page-title">Bankroll</div>
     </div></div>""",unsafe_allow_html=True)
 
     stats=bankroll_stats()
@@ -1627,15 +2013,15 @@ with TAB_BANKROLL:
           <div class="empty-sub">Results appear here after settling bets in the Staking tab.</div>
         </div>""",unsafe_allow_html=True)
     else:
-        pl_c="green" if stats["pl"]>=0 else "red"; roi_c="green" if stats["roi"]>=0 else "red"
+        pl_c="c-green" if stats["pl"]>=0 else "c-red"; roi_c="c-green" if stats["roi"]>=0 else "c-red"
         st.markdown(
             f'<div class="metric-grid">'
-            f'<div class="metric-card blue"><div class="metric-label">Bank</div><div class="metric-value blue">${stats["bank"]:.0f}</div><div class="metric-sub">Start: ${st.session_state.starting_bank:.0f}</div></div>'
-            f'<div class="metric-card {"green" if stats["pl"]>=0 else "red"}"><div class="metric-label">Total P/L</div><div class="metric-value {pl_c}">{("+" if stats["pl"]>=0 else "")}${stats["pl"]:.2f}</div></div>'
-            f'<div class="metric-card {"green" if stats["roi"]>=0 else "red"}"><div class="metric-label">ROI</div><div class="metric-value {roi_c}">{("+" if stats["roi"]>=0 else "")}{stats["roi"]:.1f}%</div><div class="metric-sub">On ${stats["staked"]:.0f} staked</div></div>'
-            f'<div class="metric-card"><div class="metric-label">Strike Rate</div><div class="metric-value">{stats["sr"]:.1f}%</div><div class="metric-sub">{stats["winners"]}/{stats["n"]} wins</div></div>'
-            f'<div class="metric-card"><div class="metric-label">Avg Odds</div><div class="metric-value">{stats["avg_odds"]:.2f}</div></div>'
-            f'<div class="metric-card red"><div class="metric-label">Max Drawdown</div><div class="metric-value red">-${abs(stats["max_dd"]):.2f}</div></div>'
+            f'<div class="metric-card c-blue"><div class="metric-lbl">Bank</div><div class="metric-val c-blue">${stats["bank"]:.0f}</div><div class="metric-sub">Start: ${st.session_state.starting_bank:.0f}</div></div>'
+            f'<div class="metric-card {"c-green" if stats["pl"]>=0 else "c-red"}"><div class="metric-lbl">Total P/L</div><div class="metric-val {pl_c}">{("+" if stats["pl"]>=0 else "")}${stats["pl"]:.2f}</div></div>'
+            f'<div class="metric-card {"c-green" if stats["roi"]>=0 else "c-red"}"><div class="metric-lbl">ROI</div><div class="metric-val {roi_c}">{("+" if stats["roi"]>=0 else "")}{stats["roi"]:.1f}%</div><div class="metric-sub">On ${stats["staked"]:.0f} staked</div></div>'
+            f'<div class="metric-card c-brass"><div class="metric-lbl">Strike Rate</div><div class="metric-val c-brass">{stats["sr"]:.1f}%</div><div class="metric-sub">{stats["winners"]}/{stats["n"]} wins</div></div>'
+            f'<div class="metric-card"><div class="metric-lbl">Avg Odds</div><div class="metric-val">{stats["avg_odds"]:.2f}</div></div>'
+            f'<div class="metric-card c-red"><div class="metric-lbl">Max Drawdown</div><div class="metric-val c-red">−${abs(stats["max_dd"]):.2f}</div></div>'
             f'</div>',unsafe_allow_html=True)
 
         settled=[b for b in st.session_state.bet_log if b["result"]!="Pending"]
@@ -1643,15 +2029,19 @@ with TAB_BANKROLL:
             st.markdown('<div class="section-hdr">Cumulative P/L</div>',unsafe_allow_html=True)
             pl_vals=[0]+list(pd.Series([b["pl"] for b in settled]).cumsum())
             fig=go.Figure()
-            fig.add_trace(go.Scatter(x=list(range(len(pl_vals))),y=pl_vals,mode="lines+markers",
-                line=dict(color="#1d4ed8",width=2.5),
-                marker=dict(size=5,color=["#16a34a" if v>=0 else "#dc2626" for v in pl_vals]),
-                fill="tozeroy",fillcolor="rgba(29,78,216,0.08)"))
-            fig.add_hline(y=0,line_dash="dash",line_color="#cbd5e1",line_width=1.5)
-            fig.update_layout(paper_bgcolor="white",plot_bgcolor="white",margin=dict(t=10,b=10,l=10,r=10),
-                xaxis=dict(title="Bet #",gridcolor="#f1f5f9",color="#64748b"),
-                yaxis=dict(title="P/L ($)",gridcolor="#f1f5f9",color="#64748b"),
-                height=320,showlegend=False,font=dict(family="Inter, sans-serif"))
+            fig.add_trace(go.Scatter(
+                x=list(range(len(pl_vals))),y=pl_vals,mode="lines+markers",
+                line=dict(color="#2255cc",width=2.5),
+                marker=dict(size=5,color=["#1a8c4e" if v>=0 else "#c0392b" for v in pl_vals]),
+                fill="tozeroy",fillcolor="rgba(34,85,204,0.07)"))
+            fig.add_hline(y=0,line_dash="dash",line_color="#d6dae3",line_width=1.5)
+            fig.update_layout(
+                paper_bgcolor="white",plot_bgcolor="white",
+                margin=dict(t=10,b=10,l=10,r=10),
+                xaxis=dict(title="Bet #",gridcolor="#f7f8fb",color="#8b95aa",tickfont=dict(family="DM Mono")),
+                yaxis=dict(title="P/L ($)",gridcolor="#f7f8fb",color="#8b95aa",tickfont=dict(family="DM Mono")),
+                height=320,showlegend=False,
+                font=dict(family="DM Sans, sans-serif"))
             st.plotly_chart(fig,use_container_width=True)
 
         col_a,col_b=st.columns(2)
@@ -1665,56 +2055,70 @@ with TAB_BANKROLL:
 
 
 # ════════════════════════════════════════════════════════════════
-# TAB 5: DEBUG
+# TAB 5 — DEBUG
 # ════════════════════════════════════════════════════════════════
 with TAB_DEBUG:
-    st.markdown("""<div class="page-hdr"><div>
+    st.markdown("""<div class="page-header"><div>
+      <div class="page-eyebrow">Diagnostics</div>
       <div class="page-title">API Debug</div>
-      <div class="page-sub">All API calls this session with status codes and response shape</div>
     </div></div>""",unsafe_allow_html=True)
 
-    st.markdown(f'**Date format being used:** `{pf_date(race_date)}`', unsafe_allow_html=False)
+    st.markdown(f'**Date format:** `{pf_date(race_date)}`')
 
+    # Live price diagnostics
+    st.markdown('<div class="section-hdr">Live Price Scrape Status</div>',unsafe_allow_html=True)
+    live_prices=st.session_state.get("_live_prices",{})
+    live_ts=st.session_state.get("_live_prices_ts")
+    live_src=st.session_state.get("_live_source","")
+    if live_prices:
+        st.markdown(f'<div class="alert alert-green">✓ {len(live_prices)} prices cached from {live_src} at {live_ts.strftime("%H:%M:%S") if live_ts else "?"}</div>',unsafe_allow_html=True)
+        with st.expander("Show cached live prices"):
+            for k,v in sorted(live_prices.items()):
+                st.markdown(f'<div class="debug-box">{k}  →  ${v:.2f}</div>',unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="alert alert-amber">No live prices cached. Load a race and click "Refresh Live Odds".</div>',unsafe_allow_html=True)
+
+    st.markdown('<div class="section-hdr">API Call Log</div>',unsafe_allow_html=True)
     api_log=st.session_state.get("_api_log",[])
     if not api_log:
-        st.markdown('<div class="alert alert-blue">No API calls yet. Fetch meetings to start logging.</div>',unsafe_allow_html=True)
+        st.markdown('<div class="alert alert-blue">No API calls yet.</div>',unsafe_allow_html=True)
     else:
         for entry in reversed(api_log[-20:]):
             status=entry["status"]
-            color="#16a34a" if status==200 else "#dc2626" if status>=400 else "#d97706"
+            color="#1a8c4e" if status==200 else "#c0392b" if status>=400 else "#b06a00"
             st.markdown(
-                f'<div style="background:#1e293b;border:1px solid #334155;border-radius:6px;padding:10px 14px;margin-bottom:6px;font-family:\'JetBrains Mono\',monospace;font-size:.72rem;color:#94a3b8">'
+                f'<div class="debug-box">'
                 f'<span style="color:{color};font-weight:700">[{status}]</span>'
-                f'&nbsp;<span style="color:#e2e8f0">{entry["ts"]}</span>'
-                f'&nbsp;&nbsp;<span style="color:#60a5fa">{entry["url"].replace(BASE_URL,"")}</span>'
+                f' <span style="color:#d6dae3">{entry["ts"]}</span>'
+                f'  <span style="color:#6fa3f5">{entry["url"].replace(BASE_URL,"")}</span>'
                 f'<br>params: {json.dumps(entry["params"])}'
-                +( f'<br><span style="color:#f87171">{entry["note"]}</span>' if entry.get("note") else "")
+                +(f'<br><span style="color:#f87171">{entry["note"]}</span>' if entry.get("note") else "")
                 +f'</div>',unsafe_allow_html=True)
 
-    # Show last runner-fetch debug if available
     dbg=st.session_state.get("_last_field_debug")
     if dbg:
-        st.markdown('<div class="section-hdr">Last Runner Fetch Attempts</div>',unsafe_allow_html=True)
+        st.markdown('<div class="section-hdr">Last Runner-Fetch Attempts</div>',unsafe_allow_html=True)
         for a in dbg.get("attempts",[]):
             ok=a.get("runners_found",0)>0
-            color="#16a34a" if ok else "#dc2626"
+            color="#1a8c4e" if ok else "#c0392b"
             st.markdown(
-                f'<div style="background:#1e293b;border:1px solid #334155;border-radius:6px;padding:10px 14px;margin-bottom:6px;font-family:\'JetBrains Mono\',monospace;font-size:.72rem;color:#94a3b8">'
+                f'<div class="debug-box">'
                 f'<span style="color:{color};font-weight:700">{"✓" if ok else "✗"}</span>'
-                f'&nbsp;<span style="color:#e2e8f0">{a["label"]}</span>'
-                f'&nbsp;runners_found=<span style="color:{"#4ade80" if ok else "#f87171"}">{a.get("runners_found",0)}</span>'
-                f'&nbsp;top_keys={a.get("top_keys",[])}'
-                f'</div>',unsafe_allow_html=True)
-
+                f' <span style="color:#d6dae3">{a["label"]}</span>'
+                f'  runners_found=<span style="color:{"#4ade80" if ok else "#f87171"}">{a.get("runners_found",0)}</span>'
+                f'  top_keys={a.get("top_keys",[])} </div>',unsafe_allow_html=True)
         for s in dbg.get("raw_samples",[]):
-            st.markdown(f'**Raw sample — {s["label"]}:**',unsafe_allow_html=False)
+            st.markdown(f'**Raw — {s["label"]}:**')
             st.markdown(f'<div class="debug-box">{s["sample"]}</div>',unsafe_allow_html=True)
 
     if st.button("Clear debug log"):
         st.session_state["_api_log"]=[]; st.session_state["_last_field_debug"]=None; st.rerun()
 
 # ─── FOOTER ──────────────────────────────────────────────────────────────────
-st.markdown("""<div style="text-align:center;padding:48px 0 24px;font-family:'JetBrains Mono',monospace;
-font-size:.6rem;color:#cbd5e1;letter-spacing:.14em;text-transform:uppercase">
-Racing Edge  ·  Research & Analysis Purposes Only  ·  Gamble Responsibly  ·  1800 858 858  ·  18+
-</div>""",unsafe_allow_html=True)
+st.markdown("""
+<div style="text-align:center;padding:52px 0 28px;
+  font-family:'DM Mono',monospace;font-size:.6rem;color:var(--silver);
+  letter-spacing:.18em;text-transform:uppercase;border-top:1px solid var(--ghost);margin-top:32px">
+  Racing Edge  ·  Research & Analysis Only  ·  Gamble Responsibly  ·  1800 858 858  ·  18+
+</div>
+""", unsafe_allow_html=True)
